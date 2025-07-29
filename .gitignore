@@ -43,3 +43,10 @@ jspm_packages/
 
 # Optional REPL history
 .node_repl_history
+
+# Private planning documents
+planning/private/
+*.private.md
+*_PRIVATE.md
+internal/
+confidential/
