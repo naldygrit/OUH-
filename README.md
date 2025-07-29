@@ -32,6 +32,3 @@ anchor deploy
 
 Status
 Week 1: Smart contract development
-Target: Colosseum Eternal submission
-
-*Built for the 200M+ Nigerians who buy airtime daily but can't access crypto*
