@@ -1,6 +1,6 @@
 OUH!
 
-USSD-based crypto onramp via Nigeria's VTU infrastructure.
+USSD-based crypto onramp via VTU infrastructure.
 
 Problem
 
