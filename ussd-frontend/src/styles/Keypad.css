@@ -1,0 +1,219 @@
+.keypad {
+  padding: 8px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.keypad-row {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+}
+
+.keypad-button {
+  width: 60px;
+  height: 40px;
+  border: 2px solid #444;
+  border-radius: 6px;
+  background: linear-gradient(145deg, #f0f0f0, #d0d0d0);
+  color: #000;
+  font-size: 12px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: all 0.1s ease;
+  user-select: none;
+  box-shadow: 
+    0 3px 6px rgba(0,0,0,0.2),
+    inset 0 1px 2px rgba(255,255,255,0.5);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+}
+
+.keypad-button:hover:not(:disabled) {
+  background: linear-gradient(145deg, #fff, #e0e0e0);
+  transform: translateY(-1px);
+  box-shadow: 
+    0 4px 8px rgba(0,0,0,0.3),
+    inset 0 1px 2px rgba(255,255,255,0.7);
+}
+
+.keypad-button:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: 
+    0 2px 4px rgba(0,0,0,0.2),
+    inset 0 2px 4px rgba(0,0,0,0.1);
+  background: linear-gradient(145deg, #d0d0d0, #c0c0c0);
+}
+
+.keypad-button:disabled {
+  background: #999;
+  color: #666;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: 
+    0 2px 4px rgba(0,0,0,0.1),
+    inset 0 1px 2px rgba(0,0,0,0.1);
+}
+
+.key-letters {
+  font-size: 7px;
+  font-weight: normal;
+  color: #666;
+  margin-top: 1px;
+}
+
+/* Navigation buttons */
+.nav-button {
+  background: linear-gradient(145deg, #e8e8e8, #d0d0d0) !important;
+  color: #333 !important;
+  font-size: 11px !important;
+  border-color: #666 !important;
+}
+
+.nav-button:hover:not(:disabled) {
+  background: linear-gradient(145deg, #f0f0f0, #e0e0e0) !important;
+}
+
+.nav-text {
+  font-size: 10px;
+  font-weight: bold;
+}
+
+/* Specific navigation button styles */
+.ok-button {
+  background: linear-gradient(145deg, #4caf50, #45a049) !important;
+  color: white !important;
+  border-color: #2e7d32 !important;
+}
+
+.ok-button .nav-text {
+  color: white;
+  font-size: 10px;
+}
+
+.back-button {
+  background: linear-gradient(145deg, #f44336, #d32f2f) !important;
+  color: white !important;
+  border-color: #c62828 !important;
+}
+
+.back-button .nav-text {
+  color: white;
+  font-size: 9px;
+}
+
+.up-button, .down-button, .left-button, .right-button {
+  background: linear-gradient(145deg, #2196f3, #1976d2) !important;
+  color: white !important;
+  border-color: #1565c0 !important;
+}
+
+.up-button .nav-text, 
+.down-button .nav-text, 
+.left-button .nav-text, 
+.right-button .nav-text {
+  color: white;
+  font-size: 14px;
+}
+
+/* Menu button */
+.menu-button {
+  background: linear-gradient(145deg, #9c27b0, #7b1fa2) !important;
+  color: white !important;
+  border-color: #6a1b9a !important;
+  width: 60px !important;
+  height: 40px !important;
+}
+
+.menu-text {
+  font-size: 10px;
+  font-weight: bold;
+  color: white;
+}
+
+/* Call button */
+.call-button {
+  background: linear-gradient(145deg, #4caf50, #45a049) !important;
+  color: white !important;
+  border-color: #2e7d32 !important;
+}
+
+.call-icon {
+  font-size: 12px;
+}
+
+.call-button .key-letters {
+  color: rgba(255,255,255,0.8);
+  font-size: 7px;
+}
+
+/* End button */
+.end-button {
+  background: linear-gradient(145deg, #f44336, #d32f2f) !important;
+  color: white !important;
+  border-color: #c62828 !important;
+}
+
+.end-icon {
+  font-size: 12px;
+}
+
+.end-button .key-letters {
+  color: rgba(255,255,255,0.8);
+  font-size: 7px;
+}
+
+/* Number buttons */
+.number-button {
+  background: linear-gradient(145deg, #f8f8f8, #e0e0e0) !important;
+  color: #000 !important;
+  border-color: #999 !important;
+}
+
+.number-button:hover:not(:disabled) {
+  background: linear-gradient(145deg, #fff, #f0f0f0) !important;
+}
+
+.keypad.disabled .keypad-button {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Animation */
+@keyframes buttonPress {
+  0% { transform: scale(1); }
+  50% { transform: scale(0.95); }
+  100% { transform: scale(1); }
+}
+
+.keypad-button:active:not(:disabled) {
+  animation: buttonPress 0.1s ease;
+}
+
+/* Mobile responsiveness */
+@media (max-width: 480px) {
+  .keypad-button {
+    width: 50px;
+    height: 35px;
+    font-size: 11px;
+  }
+  
+  .nav-text {
+    font-size: 9px;
+  }
+  
+  .up-button .nav-text, 
+  .down-button .nav-text, 
+  .left-button .nav-text, 
+  .right-button .nav-text {
+    font-size: 12px;
+  }
+  
+  .key-letters {
+    font-size: 6px;
+  }
+}

@@ -1,0 +1,133 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  min-height: 100vh;
+}
+
+.app {
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 20px;
+}
+
+.app-container {
+  text-align: center;
+  color: white;
+}
+
+.app-title {
+  font-size: 2.5rem;
+  font-weight: bold;
+  margin-bottom: 0.5rem;
+  text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+}
+
+.app-subtitle {
+  font-size: 1.1rem;
+  margin-bottom: 2rem;
+  opacity: 0.9;
+  text-shadow: 1px 1px 2px rgba(0,0,0,0.3);
+}
+
+.demo-info {
+  background: rgba(255,255,255,0.1);
+  border-radius: 12px;
+  padding: 16px;
+  margin-top: 20px;
+}
+
+.demo-info p {
+  margin: 4px 0;
+  font-size: 0.85rem;
+}
+
+/* Smartphone Demo Styles */
+.smartphone-demo {
+  display: flex;
+  justify-content: center;
+  margin: 20px 0;
+}
+
+.smartphone-info {
+  background: rgba(255,255,255,0.95);
+  border-radius: 16px;
+  padding: 30px;
+  text-align: center;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+  backdrop-filter: blur(10px);
+  min-width: 300px;
+}
+
+.smartphone-info h3 {
+  color: #333;
+  margin: 0 0 16px 0;
+  font-size: 1.3rem;
+}
+
+.smartphone-info p {
+  color: #666;
+  margin: 8px 0;
+  font-size: 0.95rem;
+}
+
+.dial-button {
+  background: linear-gradient(135deg, #007bff, #0056b3);
+  color: white;
+  border: none;
+  padding: 12px 24px;
+  border-radius: 10px;
+  font-size: 1rem;
+  font-weight: bold;
+  cursor: pointer;
+  margin: 8px 4px;
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 12px rgba(0,123,255,0.3);
+}
+
+.dial-button:hover {
+  background: linear-gradient(135deg, #0056b3, #004085);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(0,123,255,0.4);
+}
+
+.dial-button:active {
+  transform: translateY(0);
+  box-shadow: 0 2px 8px rgba(0,123,255,0.2);
+}
+
+/* Mobile Responsiveness */
+@media (max-width: 768px) {
+  .app-title {
+    font-size: 2rem;
+  }
+  
+  .app-subtitle {
+    font-size: 1rem;
+  }
+  
+  .app {
+    padding: 10px;
+  }
+  
+  .smartphone-info {
+    min-width: 280px;
+    padding: 20px;
+  }
+  
+  .dial-button {
+    display: block;
+    width: 100%;
+    margin: 8px 0;
+  }
+}

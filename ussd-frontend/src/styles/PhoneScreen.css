@@ -1,0 +1,71 @@
+.phone-screen {
+  height: 140px;
+  background: #d4d4aa;
+  border: 3px inset #999;
+  border-radius: 4px;
+  padding: 12px;
+  margin: 12px 0;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  line-height: 1.3;
+  color: #000;
+  overflow: hidden;
+  position: relative;
+  box-shadow: inset 0 2px 4px rgba(0,0,0,0.2);
+}
+
+.phone-screen.loading {
+  background: #e8e8c4;
+}
+
+.screen-text {
+  margin: 0;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  height: 100%;
+  overflow: hidden;
+}
+
+.loading-indicator {
+  position: absolute;
+  bottom: 8px;
+  right: 12px;
+  color: #333;
+}
+
+.loading-dots {
+  animation: pulse 1.5s infinite ease-in-out;
+  font-size: 14px;
+}
+
+@keyframes pulse {
+  0%, 100% { 
+    opacity: 0.4; 
+    transform: scale(0.8);
+  }
+  50% { 
+    opacity: 1; 
+    transform: scale(1);
+  }
+}
+
+/* Screen flicker effect for authenticity */
+.phone-screen::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(
+    0deg,
+    transparent 50%,
+    rgba(255,255,255,0.03) 50%
+  );
+  background-size: 100% 4px;
+  pointer-events: none;
+  opacity: 0.8;
+}
