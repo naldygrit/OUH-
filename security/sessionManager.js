@@ -10,7 +10,7 @@ class SecureSessionManager {
     // Cleanup expired sessions every minute
     setInterval(() => this.cleanupExpiredSessions(), 60000);
     
-    console.log('🔐 Secure Session Manager initialized');
+    console.log(' Secure Session Manager initialized');
   }
 
   deriveKey(secret) {
@@ -53,7 +53,7 @@ class SecureSessionManager {
       phoneHash: crypto.createHash('sha256').update(phoneNumber).digest('hex').substring(0, 8)
     });
 
-    console.log(`🔐 Created secure session: ${sessionId.slice(-8)} for ${sessionData.phoneNumber} (Level: ${sessionData.securityLevel})`);
+    console.log(` Created secure session: ${sessionId.slice(-8)} for ${sessionData.phoneNumber} (Level: ${sessionData.securityLevel})`);
     return sessionData.nonce;
   }
 
@@ -130,7 +130,7 @@ class SecureSessionManager {
 
     const deleted = this.sessions.delete(sessionId);
     if (deleted) {
-      console.log(`🗑️ Destroyed session: ${sessionId?.slice(-8)} (Hash: ${sessionEntry.phoneHash})`);
+      console.log(` Destroyed session: ${sessionId?.slice(-8)} (Hash: ${sessionEntry.phoneHash})`);
     }
     return deleted;
   }
