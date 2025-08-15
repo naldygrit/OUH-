@@ -43,7 +43,7 @@ const createSecureRateLimiter = (windowMs, max, message, keyGenerator = null, op
       });
       
       // Log security event for monitoring
-      console.log(`🚨 Security Event: Rate Limit Violation`, {
+      console.log(` Security Event: Rate Limit Violation`, {
         type: 'RATE_LIMIT_EXCEEDED',
         identifier: maskedIdentifier,
         path: req.path,
