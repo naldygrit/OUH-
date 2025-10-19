@@ -405,7 +405,7 @@ const AndroidFrame: React.FC<AndroidFrameProps> = ({
                   onPaste={(e) => {
                     if (isPinStep) e.preventDefault(); // optional: block paste for PIN
                   }}
-                  placeholder={isPinStep ? 'Enter 4-digit PIN' : 'Enter your response'}
+                  placeholder={isPinStep ? 'Enter PIN (4-6 digits)' : 'Enter your response'}
                 />
               </div>
               <div className="samsung-sheet-actions">

@@ -138,7 +138,7 @@ const App: React.FC = () => {
       } else if (['0','1','2','3','4','5','6','7','8','9'].includes(key)) {
         if (isPinScreen()) {
           // PIN input: allow up to 4 digits
-          if (dialInput.length < 4) {
+          if (dialInput.length < 6) {
             setDialInput(prev => prev + key);
           }
         } else if (isPhoneNumberScreen()) {
@@ -156,9 +156,9 @@ const App: React.FC = () => {
 
   const isPinScreen = (): boolean => {
     return ussdResponse.includes('PIN:') || 
-           ussdResponse.includes('Enter 4-digit PIN') ||
-           ussdResponse.includes('Create 4-digit PIN') ||
-           ussdResponse.includes('Re-enter your 4-digit PIN');
+           ussdResponse.includes('Enter PIN (4-6 digits)') ||
+           ussdResponse.includes('Create PIN (4-6 digits)') ||
+           ussdResponse.includes('Re-enter your PIN');
   };
 
   const isPhoneNumberScreen = (): boolean => {
@@ -307,7 +307,7 @@ const App: React.FC = () => {
       if (dialInput) {
         if (isPinScreen()) {
           const masked = '*'.repeat(dialInput.length);
-          const progress = `(${dialInput.length}/4)`;
+          const progress = `(${dialInput.length}/6)`;
           inputDisplay = `\n> ${masked} ${progress}`;
         } else if (isPhoneNumberScreen()) {
           inputDisplay = `\n> ${dialInput}`;
@@ -382,8 +382,8 @@ const App: React.FC = () => {
         
         <div className="demo-info">
           <p>🔄 Device: {deviceType === 'basic' ? 'Nokia Feature Phone' : 'Android Smartphone'}</p>
-          <p>📱 Current: {phoneProfile?.displayNumber} ({PhoneManager.isRegistered(phoneProfile?.number || '') ? 'Registered' : 'Unregistered'})</p>
-          <p>📊 Char Limit: {PhoneManager.getCharacterLimit(deviceType)} characters</p>
+          <p>Current: {phoneProfile?.displayNumber} ({PhoneManager.isRegistered(phoneProfile?.number || '') ? 'Registered' : 'Unregistered'})</p>
+          <p>Char Limit: {PhoneManager.getCharacterLimit(deviceType)} characters</p>
         </div>
       </div>
     </div>
