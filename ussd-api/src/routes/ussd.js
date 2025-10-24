@@ -1,10 +1,12 @@
 const express = require('express');
 const router = express.Router();
+const crypto = require('crypto');
 const solanaService = require('../services/solanaService');
+const userRegistry = require('../services/userRegistry');
 const { pinLimiter, registrationLimiter, transactionLimiter } = require('../middleware/rateLimiter');
 
 /**
- * Enhanced USSD Routes with comprehensive security + Pyth Network Integration
+ * Enhanced USSD Routes with comprehensive security + Pyth Network Integration + Wallet Linking
  * OPTIMIZED: All messages under 160 characters for USSD compliance
  */
 
@@ -31,13 +33,10 @@ const validateSession = (req, sessionId, expectedNonce = null) => {
   if (!req.sessionManager) {
     throw new Error('Session manager not available');
   }
-  
   const session = req.sessionManager.getSession(sessionId, expectedNonce);
-  
   if (!session) {
     throw new Error('Invalid or expired session');
   }
-  
   return session;
 };
 
@@ -50,17 +49,17 @@ const handleSecureError = (error, res, sessionId = null, sessionManager = null) 
     sessionId: sessionId?.slice(-8),
     timestamp: new Date().toISOString()
   });
-  
+
   if (sessionId && sessionManager && error.message.includes('security')) {
     sessionManager.destroySession(sessionId);
   }
-  
+
   const isSecurityError = error.message.includes('rate limit') ||
                          error.message.includes('attempts') ||
                          error.message.includes('blocked') ||
                          error.message.includes('invalid') ||
                          error.message.includes('expired');
-  
+
   res.status(isSecurityError ? 429 : 500).json({
     error: isSecurityError ? error.message : 'Service temporarily unavailable',
     end: true,
@@ -74,15 +73,18 @@ const handleSecureError = (error, res, sessionId = null, sessionManager = null) 
  * Route: POST /api/ussd/start
  */
 router.post('/start', registrationLimiter, async (req, res) => {
+  console.log('🔍 BACKEND RAW BODY:', JSON.stringify(req.body, null, 2));
+  
   try {
-    const { sessionId, phoneNumber } = req.body;
-    
+    const { sessionId, phoneNumber, deviceType } = req.body;
+
     console.log('USSD Start Request:', {
       sessionId: sessionId?.slice(-8),
       phoneNumber: phoneNumber?.substring(0, 4) + '****',
+      deviceType: deviceType || 'unknown',
       timestamp: new Date().toISOString()
     });
-    
+
     // Enhanced validation
     if (!sessionId || !phoneNumber) {
       return res.status(400).json({
@@ -94,29 +96,28 @@ router.post('/start', registrationLimiter, async (req, res) => {
         timestamp: new Date().toISOString()
       });
     }
-    
+
     if (!/^[a-zA-Z0-9_-]+$/.test(sessionId) || sessionId.length < 8) {
       return res.status(400).json({
         error: 'Invalid session ID format. Must be alphanumeric, at least 8 characters.',
         timestamp: new Date().toISOString()
       });
     }
-    
+
     const displayNumber = normalizePhoneNumber(phoneNumber);
-    
+
     if (!solanaService.validatePhoneNumber(displayNumber)) {
       return res.status(400).json({
         error: 'Invalid phone number format. Please use Nigerian format (e.g., 08031234567).',
         timestamp: new Date().toISOString()
       });
     }
-    
+
     // Route based on session ID pattern
     if (sessionId.includes('registration')) {
       console.log('Starting REGISTRATION flow for:', displayNumber.substring(0, 4) + '****');
       
       const userExists = await solanaService.userExists(displayNumber);
-      
       if (userExists) {
         return res.json({
           message: `✅ ${displayNumber.substring(0, 4)}**** registered\nDial *789*AMOUNT# to transact`,
@@ -124,18 +125,18 @@ router.post('/start', registrationLimiter, async (req, res) => {
           timestamp: new Date().toISOString()
         });
       }
-      
+
       const sessionNonce = req.sessionManager.createSession(sessionId, displayNumber, {
         flowType: 'registration',
         stage: 'wallet_type_selection',
+        deviceType: deviceType || 'basic',
         attempts: 0,
         securityLevel: 'enhanced',
         createdAt: Date.now()
       });
-      
-      // OPTIMIZED: 68 chars
+
       const message = `Welcome to OUH!\n\n1. New Wallet\n2. Link Existing`;
-      
+
       res.json({
         message: message,
         end: false,
@@ -143,12 +144,11 @@ router.post('/start', registrationLimiter, async (req, res) => {
         nonce: sessionNonce,
         timestamp: new Date().toISOString()
       });
-      
+
     } else if (sessionId.includes('purchase')) {
       console.log('Starting PURCHASE flow for:', displayNumber.substring(0, 4) + '****');
       
       const userExists = await solanaService.userExists(displayNumber);
-      
       if (!userExists) {
         return res.json({
           message: `Not registered\nDial *789# to create wallet`,
@@ -156,26 +156,33 @@ router.post('/start', registrationLimiter, async (req, res) => {
           timestamp: new Date().toISOString()
         });
       }
-      
+
       const purchaseData = sessionId.replace('purchase_', '');
       const parts = purchaseData.split('_');
-      
+
+      console.log('🔍 PURCHASE DATA PARSING:', {
+        sessionId,
+        purchaseData,
+        parts,
+        partsLength: parts.length
+      });
+
       let amount, pin, recipient, pattern;
-      
-      // Pattern detection
-      if (parts.length === 3 && parts[0].length === 11) {
+      const actualParts = parts.slice(0, -1);
+
+      if (actualParts.length === 3 && actualParts[0].length === 11) {
         pattern = 'send_to_other';
-        recipient = parts[0];
-        amount = parseInt(parts[1]);
-        pin = parts[2];
-      } else if (parts.length === 2 && parts[0].length <= 6) {
+        recipient = actualParts[0];
+        amount = parseInt(actualParts[1]);
+        pin = actualParts[2];
+      } else if (actualParts.length === 2 && actualParts[0].length <= 6) {
         pattern = 'buy_for_self';
         recipient = displayNumber;
-        amount = parseInt(parts[0]);
-        pin = parts[1];
-      } else if (parts.length === 1) {
+        amount = parseInt(actualParts[0]);
+        pin = actualParts[1];
+      } else if (actualParts.length === 1) {
         pattern = 'fallback';
-        amount = parseInt(parts[0]);
+        amount = parseInt(actualParts[0]);
         recipient = displayNumber;
         pin = null;
       } else {
@@ -184,8 +191,7 @@ router.post('/start', registrationLimiter, async (req, res) => {
           timestamp: new Date().toISOString()
         });
       }
-      
-      // Validate amount
+
       if (!solanaService.validateAmount(amount)) {
         return res.json({
           message: `Invalid amount: ₦${amount.toLocaleString()}\nRange: ₦100-₦1M`,
@@ -193,8 +199,7 @@ router.post('/start', registrationLimiter, async (req, res) => {
           timestamp: new Date().toISOString()
         });
       }
-      
-      // Pattern 1 & 2: Verify PIN immediately
+
       if (pattern !== 'fallback' && pin) {
         try {
           await solanaService.checkPinRateLimit(displayNumber);
@@ -207,8 +212,8 @@ router.post('/start', registrationLimiter, async (req, res) => {
               timestamp: new Date().toISOString()
             });
           }
-          
-          const pinValid = true; // Mock for demo
+
+          const pinValid = true;
           
           if (!pinValid) {
             solanaService.incrementPinAttempts(displayNumber);
@@ -218,10 +223,9 @@ router.post('/start', registrationLimiter, async (req, res) => {
               timestamp: new Date().toISOString()
             });
           }
-          
+
           solanaService.resetPinAttempts(displayNumber);
           console.log('✅ PIN verified - fast-track enabled');
-          
         } catch (error) {
           return res.json({
             message: `${error.message}\nTry again later`,
@@ -230,7 +234,7 @@ router.post('/start', registrationLimiter, async (req, res) => {
           });
         }
       }
-      
+
       const sessionNonce = req.sessionManager.createSession(sessionId, displayNumber, {
         flowType: 'purchase',
         stage: pattern === 'fallback' ? 'service_selection' : 'service_selection_verified',
@@ -243,17 +247,14 @@ router.post('/start', registrationLimiter, async (req, res) => {
         securityLevel: 'enhanced',
         createdAt: Date.now()
       });
-      
-      // OPTIMIZED: Show recipient confirmation in Screen 1
+
       let message;
       if (pattern === 'send_to_other') {
-        // Pattern 2: Sending to someone else
         message = `₦${amount.toLocaleString()}\nTo: ${recipient}\n\n1. Load Wallet (USDC)\n2. Buy Airtime`;
       } else {
-        // Pattern 1 & 3: Buying for self
         message = `₦${amount.toLocaleString()}\nTo: ${recipient} (You)\n\n1. Load Wallet (USDC)\n2. Buy Airtime`;
       }
-      
+
       res.json({
         message: message,
         end: false,
@@ -261,602 +262,478 @@ router.post('/start', registrationLimiter, async (req, res) => {
         nonce: sessionNonce,
         timestamp: new Date().toISOString()
       });
-      
+
     } else {
       return res.status(400).json({
         error: 'Invalid session type. Use "registration_" or "purchase_" prefix.',
         timestamp: new Date().toISOString()
       });
     }
+
   } catch (error) {
     handleSecureError(error, res);
   }
 });
 
-/**
- * Continue USSD session with enhanced security + Pyth integration
- * Route: POST /api/ussd/continue
- */
+// Continue route with wallet linking support
 router.post('/continue', pinLimiter, async (req, res) => {
   try {
-    const { sessionId, text, nonce } = req.body;
-    
+    const { sessionId, phoneNumber, text } = req.body;
+
     console.log('USSD Continue:', {
       sessionId: sessionId?.slice(-8),
-      text: text?.substring(0, 10) + (text?.length > 10 ? '...' : ''),
+      phoneNumber: phoneNumber?.substring(0, 4) + '****',
+      text: text?.length > 10 ? text.substring(0, 10) + '...' : text,
       timestamp: new Date().toISOString()
     });
-    
-    if (!sessionId || text === undefined) {
+
+    if (!sessionId || !phoneNumber || text === undefined) {
       return res.status(400).json({
-        error: 'Missing required fields: sessionId and text',
+        error: 'Missing required fields: sessionId, phoneNumber, and text',
         timestamp: new Date().toISOString()
       });
     }
-    
-    if (text.length > 160) {
-      return res.status(400).json({
-        error: 'Input too long. Maximum 160 characters allowed.',
-        timestamp: new Date().toISOString()
-      });
-    }
-    
-    const session = validateSession(req, sessionId, nonce);
-    const cleanText = solanaService.sanitizeInput(text);
-    
+
+    const session = validateSession(req, sessionId);
+    const displayNumber = normalizePhoneNumber(phoneNumber);
+
+    console.log('📋 Session State:', {
+      flowType: session.flowType,
+      stage: session.stage,
+      deviceType: session.deviceType,
+      attempts: session.attempts
+    });
+
     let message = '';
     let end = false;
-    
+
     if (session.flowType === 'registration') {
-      // REGISTRATION FLOW - All messages optimized
       switch (session.stage) {
         case 'wallet_type_selection':
-          if (cleanText === '1') {
-            session.stage = 'new_wallet_confirm';
-            session.walletType = 'new';
-            // OPTIMIZED: 82 chars
-            message = `New Wallet\n${session.originalPhone}\nSecure on Solana\n\n1. OK\n2. Change`;
-          } else if (cleanText === '2') {
-            session.stage = 'link_wallet_confirm';
-            session.walletType = 'link';
-            // OPTIMIZED: 85 chars
-            message = `Link Wallet\n${session.originalPhone}\nConnect to USSD\n\n1. OK\n2. Change`;
-          } else {
-            session.attempts = (session.attempts || 0) + 1;
-            if (session.attempts >= 3) {
-              message = `Too many attempts\nDial *789# to restart`;
-              end = true;
-              req.sessionManager.destroySession(sessionId);
-            } else {
-              message = `Invalid option\n\n1. New Wallet\n2. Link Existing`;
-            }
-          }
-          break;
-          
-        case 'new_wallet_confirm':
-          if (cleanText === '1') {
+          if (text === '1') {
+            console.log('📱 New Wallet selected');
             session.stage = 'new_wallet_pin_setup';
-            // OPTIMIZED: 32 chars
-            message = `Create PIN (4-6 digits)\n\nPIN:`;
-          } else if (cleanText === '2') {
-            session.stage = 'new_wallet_change_number';
-            // OPTIMIZED: 41 chars
-            message = `Enter Phone\nFormat: 08031234567\n\n#:`;
+            session.walletType = 'new';
+            message = `Create PIN (4-6 digits)\nThis PIN secures your wallet\n\nPIN:`;
+          } else if (text === '2') {
+            console.log('🔗 Link Existing selected');
+            if (session.deviceType === 'smartphone') {
+              session.stage = 'link_wallet_pin_setup';
+              session.walletType = 'existing';
+              message = `Create PIN (4-6 digits)\nThis PIN secures your account\n\nPIN:`;
+            } else {
+              message = `Wallet linking requires smartphone\nPlease use option 1 or dial from Android device`;
+              end = true;
+            }
           } else {
-            message = `New Wallet\n${session.originalPhone}\n\n1. OK\n2. Change`;
+            message = `Invalid option\n\nWelcome to OUH!\n\n1. New Wallet\n2. Link Existing`;
           }
           break;
-          
-        case 'new_wallet_change_number':
-          if (cleanText.length === 11 && solanaService.validatePhoneNumber(cleanText)) {
-            session.originalPhone = cleanText;
-            session.stage = 'new_wallet_confirm';
-            message = `New Wallet\n${cleanText}\nSecure on Solana\n\n1. OK\n2. Change`;
+
+        case 'link_wallet_pin_setup':
+          if (text.length >= 4 && text.length <= 6 && text.match(/^\d+$/)) {
+            session.stage = 'link_wallet_pin_confirm';
+            session.tempPin = text;
+            message = `Re-enter your PIN (${text.length} digits):\n\nPIN:`;
           } else {
             session.attempts = (session.attempts || 0) + 1;
             if (session.attempts >= 3) {
-              message = `Too many attempts\nDial *789# to retry`;
+              message = `Too many invalid attempts\nRegistration cancelled\n\nDial *789# to try again`;
               end = true;
               req.sessionManager.destroySession(sessionId);
             } else {
-              message = `Invalid format\n11 digits: 08031234567\n\n#:`;
+              message = `PIN must be 4-6 digits\n\nCreate PIN (4-6 digits):`;
             }
           }
           break;
-          
-        case 'new_wallet_pin_setup':
-          if (solanaService.validatePin(cleanText)) {
-            session.stage = 'new_wallet_pin_confirm';
-            session.tempPin = cleanText;
-            // OPTIMIZED: 19 chars
-            message = `Confirm PIN\n\nPIN:`;
-          } else {
-            session.attempts = (session.attempts || 0) + 1;
-            if (session.attempts >= 3) {
-              message = `Too many attempts\nDial *789# to retry`;
-              end = true;
-              req.sessionManager.destroySession(sessionId);
-            } else {
-              message = `PIN must be 4-6 digits\n\nPIN:`;
-            }
-          }
-          break;
-          
-        case 'new_wallet_pin_confirm':
-          if (cleanText === session.tempPin) {
-            try {
-              const registrationResult = await solanaService.registerUser(
-                session.originalPhone,
-                session.tempPin
-              );
-              
-              if (registrationResult.success) {
-                const pdaDisplay = registrationResult.userPDA ? 
-                  registrationResult.userPDA.slice(0, 8) + '...' : 'abc12345...';
-                
-                // OPTIMIZED: 95 chars
-                message = `✅ Wallet Created\n${session.originalPhone}\nPDA: ${pdaDisplay}\n\nDial *789*AMT# to load`;
-              } else {
-                message = `Registration failed\n${registrationResult.error}`;
+
+        case 'link_wallet_pin_confirm':
+          if (text === session.tempPin) {
+            console.log('🔗 PIN confirmed - Generating connection ID...');
+            const connectionId = crypto.randomBytes(8).toString('hex');
+            
+            global.walletConnections = global.walletConnections || {};
+            global.walletConnections[connectionId] = {
+              sessionId: sessionId,
+              phoneNumber: displayNumber,
+              pin: session.tempPin,
+              status: 'pending',
+              createdAt: Date.now(),
+              expiresAt: Date.now() + 600000
+            };
+
+            console.log('🔐 Connection stored:', {
+              connectionId: connectionId.substring(0, 8),
+              phone: displayNumber.substring(0, 4) + '****',
+              expiresIn: '10 minutes'
+            });
+
+            setTimeout(() => {
+              if (global.walletConnections[connectionId]?.status === 'pending') {
+                console.log('🗑️ Cleaning up expired connection:', connectionId.substring(0, 8));
+                delete global.walletConnections[connectionId];
               }
-            } catch (error) {
-              message = `Registration failed\nTry again later`;
+            }, 600000);
+
+            message = `✅ PIN Confirmed!\n\nOpening wallet app...\n[WALLET_CONNECT:${connectionId}]`;
+            end = true;
+            req.sessionManager.destroySession(sessionId);
+          } else {
+            session.attempts = (session.attempts || 0) + 1;
+            if (session.attempts >= 2) {
+              message = `PIN mismatch limit reached\nRegistration cancelled\n\nDial *789# to try again`;
+              end = true;
+              req.sessionManager.destroySession(sessionId);
+            } else {
+              message = `PINs do not match\nRe-enter your PIN:`;
+            }
+          }
+          break;
+
+        case 'new_wallet_pin_setup':
+          if (text.length >= 4 && text.length <= 6 && text.match(/^\d+$/)) {
+            session.stage = 'new_wallet_pin_confirm';
+            session.tempPin = text;
+            message = `Re-enter your PIN (${text.length} digits):\n\nPIN:`;
+          } else {
+            session.attempts = (session.attempts || 0) + 1;
+            if (session.attempts >= 3) {
+              message = `Too many invalid attempts\nRegistration cancelled\n\nDial *789# to try again`;
+              end = true;
+              req.sessionManager.destroySession(sessionId);
+            } else {
+              message = `PIN must be 4-6 digits\n\nCreate PIN (4-6 digits):`;
+            }
+          }
+          break;
+
+        case 'new_wallet_pin_confirm':
+          if (text === session.tempPin) {
+            console.log('🔗 Registering user on Solana blockchain...');
+            const registrationResult = await solanaService.registerUser(
+              displayNumber,
+              session.tempPin
+            );
+
+            if (registrationResult.success) {
+              console.log('🎉 NEW WALLET CREATED ON SOLANA');
+              message = `✅ Wallet Created!\n\nSolana blockchain wallet created\nPhone: ${displayNumber}\n\nDial *789*AMOUNT*PIN# to purchase crypto`;
+            } else {
+              console.error('❌ Solana registration failed:', registrationResult.error);
+              message = `Registration failed:\n${registrationResult.error}\n\nPlease try again later`;
             }
             end = true;
             req.sessionManager.destroySession(sessionId);
           } else {
             session.attempts = (session.attempts || 0) + 1;
-            if (session.attempts >= 3) {
-              message = `Too many attempts\nDial *789# to retry`;
+            if (session.attempts >= 2) {
+              message = `PIN mismatch limit reached\nRegistration cancelled\n\nDial *789# to try again`;
               end = true;
               req.sessionManager.destroySession(sessionId);
             } else {
-              message = `PINs don't match\n\nConfirm PIN\n\nPIN:`;
+              message = `PINs do not match\nRe-enter your PIN:`;
             }
           }
           break;
-          
-        case 'link_wallet_confirm':
-          if (cleanText === '1') {
-            session.stage = 'link_wallet_pin_setup';
-            message = `Create PIN (4-6 digits)\nSecure your wallet\n\nPIN:`;
-          } else if (cleanText === '2') {
-            session.stage = 'link_wallet_change_number';
-            message = `Enter Phone\nFormat: 08031234567\n\n#:`;
-          } else {
-            message = `Link Wallet\n${session.originalPhone}\n\n1. OK\n2. Change`;
-          }
-          break;
-          
-        case 'link_wallet_pin_setup':
-          if (solanaService.validatePin(cleanText)) {
-            session.stage = 'link_wallet_pin_confirm';
-            session.tempPin = cleanText;
-            message = `Confirm PIN\n\nPIN:`;
-          } else {
-            message = `PIN must be 4-6 digits\n\nPIN:`;
-          }
-          break;
-          
-        case 'link_wallet_pin_confirm':
-          if (cleanText === session.tempPin) {
-            try {
-              const linkResult = await solanaService.registerUser(
-                session.originalPhone,
-                session.tempPin
-              );
-              
-              if (linkResult.success) {
-                const linkToken = Math.random().toString(36).substring(2, 8).toUpperCase();
-                session.stage = 'link_wallet_sms_sent';
-                session.linkToken = linkToken;
-                message = `SMS sent to ${session.originalPhone}\n\nLink: ouh.app/link/${linkToken}\n\nPress any key`;
-              } else {
-                message = `Linking failed\nTry again`;
-              }
-            } catch (error) {
-              message = `Linking failed\nTry later`;
-            }
-          } else {
-            message = `PINs don't match\n\nConfirm PIN\n\nPIN:`;
-          }
-          break;
-          
-        case 'link_wallet_sms_sent':
-          const pdaDisplay2 = 'abc12345...';
-          message = `✅ Wallet Linked\n${session.originalPhone}\nPDA: ${pdaDisplay2}\n\nDial *789*AMT#`;
-          end = true;
-          req.sessionManager.destroySession(sessionId);
-          break;
-          
+
         default:
-          message = `Session expired\nDial *789# to start`;
+          message = `Session error\nPlease dial *789# to start again`;
           end = true;
           req.sessionManager.destroySession(sessionId);
       }
-      
+
+      if (!end) {
+        req.sessionManager.updateSession(sessionId, session);
+      }
+
     } else if (session.flowType === 'purchase') {
-      // PURCHASE FLOW - All messages optimized under 160 chars
       switch (session.stage) {
         case 'service_selection':
         case 'service_selection_verified':
-          if (cleanText === '1') {
+          if (text === '1') {
+            const rateData = await solanaService.getBestRate();
+            const transactionFee = 50; // ₦50 fixed fee
+            const totalAmount = session.amount + transactionFee;
+            const usdcAmount = (session.amount / rateData.rate).toFixed(2);
+
+            session.stage = session.pinVerified ? 'confirm_purchase' : 'enter_pin';
+            session.service = 'load_wallet';
+            session.exchangeRate = rateData.rate;
+            session.usdcAmount = usdcAmount;
+            session.rateSource = rateData.source;
+            session.transactionFee = transactionFee;
+            session.totalAmount = totalAmount;
+
+            if (session.pinVerified) {
+              message = `₦${session.amount.toLocaleString()} → ${usdcAmount} USDC\nFee: ₦${transactionFee}\nBest Rate: ₦${Math.round(rateData.rate).toLocaleString()}/$ (${rateData.source})\n\n1. Confirm\n2. Cancel`;
+            } else {
+              message = `Load ₦${session.amount.toLocaleString()} USDC\nEnter PIN (4-6 digits):\n\nPIN:`;
+            }
+          } else if (text === '2') {
+            session.stage = session.pinVerified ? 'confirm_purchase' : 'enter_pin';
+            session.service = 'airtime';
+
+            if (session.pinVerified) {
+              message = `Buy ₦${session.amount.toLocaleString()} Airtime\nTo: ${session.recipient}\n\n1. Confirm\n2. Cancel`;
+            } else {
+              message = `Buy ₦${session.amount.toLocaleString()} Airtime\nEnter PIN (4-6 digits):\n\nPIN:`;
+            }
+          } else {
+            message = `Invalid option\n\n₦${session.amount.toLocaleString()}\n\n1. Load Wallet (USDC)\n2. Buy Airtime`;
+          }
+          break;
+
+        case 'enter_pin':
+          if (text.length >= 4 && text.length <= 6 && text.match(/^\d+$/)) {
             try {
-              const calculation = await solanaService.calculateCryptoPurchase(session.amount);
-              const usdcAmount = (calculation.usdcAmount / 1000000).toFixed(2);
+              await solanaService.checkPinRateLimit(displayNumber);
               
-              if (session.pinVerified && session.pin) {
-                session.stage = 'fast_track_confirm';
-                session.serviceType = 'wallet';
-                session.calculation = calculation;
+              // In production, verify PIN against stored hash
+              const pinValid = true; // Replace with actual PIN verification
+              
+              if (!pinValid) {
+                solanaService.incrementPinAttempts(displayNumber);
+                session.attempts = (session.attempts || 0) + 1;
                 
-                const rateSource = calculation.rateSource || 'Default';
-                const pythStatus = calculation.pythEnabled ? '📊 Pyth' : '📈 Default';
-                
-                // OPTIMIZED: ~145 chars
-                message = `Load Wallet\nAmt: ₦${session.amount.toLocaleString()}  Fee: ₦${calculation.fee}\nBest Rate: ₦${calculation.rate}/$1; ~${usdcAmount} USDC; ${rateSource} (${pythStatus})\n\n1. Confirm\n0. Cancel`;
-                
+                if (session.attempts >= 3) {
+                  message = `Too many invalid PIN attempts\nTransaction cancelled`;
+                  end = true;
+                  req.sessionManager.destroySession(sessionId);
+                } else {
+                  message = `Invalid PIN\nTry again (${3 - session.attempts} attempts left):`;
+                }
               } else {
-                session.stage = 'load_wallet_confirm';
-                session.serviceType = 'wallet';
-                session.calculation = calculation;
+                solanaService.resetPinAttempts(displayNumber);
+                session.stage = 'confirm_purchase';
+                session.pin = text;
                 
-                const rateSource = calculation.rateSource || 'Default';
-                const pythStatus = calculation.pythEnabled ? '📊 Pyth' : '📈 Default';
-                
-                // OPTIMIZED: ~145 chars
-                message = `Load Wallet\nAmt: ₦${session.amount.toLocaleString()}  Fee: ₦${calculation.fee}\nBest Rate: ₦${calculation.rate}/$1; ~${usdcAmount} USDC; ${rateSource} (${pythStatus})\n\n1. Confirm\n0. Cancel`;
+                if (session.service === 'load_wallet') {
+                  message = `₦${session.amount.toLocaleString()} → ${session.usdcAmount} USDC\nRate: ₦${Math.round(session.exchangeRate).toLocaleString()}/$ (${session.rateSource})\n\n1. Confirm\n2. Cancel`;
+                } else {
+                  message = `Buy ₦${session.amount.toLocaleString()} Airtime\nTo: ${session.recipient}\n\n1. Confirm\n2. Cancel`;
+                }
               }
             } catch (error) {
-              message = `Calculation failed\nTry again`;
+              message = `${error.message}\nTry again later`;
               end = true;
               req.sessionManager.destroySession(sessionId);
-            }
-          } else if (cleanText === '2') {
-            if (session.pinVerified && session.pin) {
-              session.stage = 'fast_track_airtime_confirm';
-              session.serviceType = 'airtime';
-              
-              const recipientDisplay = session.recipient === session.originalPhone ?
-                session.originalPhone : session.recipient;
-              
-              // OPTIMIZED: ~65 chars
-              message = `Buy Airtime\nAmt: ₦${session.amount.toLocaleString()}  Fee: FREE\nTo: ${recipientDisplay}\n\n1. Confirm\n0. Cancel`;
-              
-            } else {
-              session.stage = 'airtime_confirm';
-              session.serviceType = 'airtime';
-              // OPTIMIZED: ~65 chars
-              message = `Buy Airtime\nAmt: ₦${session.amount.toLocaleString()}  Fee: FREE\nTo: ${session.originalPhone}\n\n1. Confirm\n0. Cancel`;
             }
           } else {
             session.attempts = (session.attempts || 0) + 1;
             if (session.attempts >= 3) {
-              message = `Too many attempts\nDial *789*${session.amount}# to retry`;
+              message = `Too many invalid PIN attempts\nTransaction cancelled`;
               end = true;
               req.sessionManager.destroySession(sessionId);
             } else {
-              message = `Invalid option\n\n1. Load Wallet\n2. Buy Airtime`;
+              message = `PIN must be 4-6 digits\nEnter PIN:`;
             }
           }
           break;
-        
-        case 'fast_track_confirm':
-          if (cleanText === '1') {
+
+        case 'confirm_purchase':
+          if (text === '1') {
+            console.log('💳 Processing transaction...', {
+              service: session.service,
+              amount: session.amount,
+              recipient: session.recipient?.substring(0, 4) + '****'
+            });
+
             try {
-              const txResult = await solanaService.createTransaction(
-                session.originalPhone,
-                session.pin,
-                session.amount,
-                'crypto'
-              );
+              // Get user wallet address
+              const userData = userRegistry.getUserData(displayNumber);
               
-              if (txResult.success) {
-                const usdcAmount = (session.calculation.usdcAmount / 1000000).toFixed(2);
-                const txIdDisplay = txResult.signature.substring(0, 16);
-                
-                // OPTIMIZED: Removed "To: your wallet" and rocket emoji
-                message = `✅ Success!\n₦${session.amount.toLocaleString()} → ${usdcAmount} USDC\nTx: ${txIdDisplay}...`;
-              } else {
-                message = `❌ Transaction failed\n${txResult.error}\n\nTry again`;
+              if (!userData || !userData.walletAddress) {
+                message = `Wallet not found\nPlease register first\nDial *789#`;
+                end = true;
+                req.sessionManager.destroySession(sessionId);
+                break;
               }
-            } catch (error) {
-              message = `❌ Transaction failed\n${error.message}\n\nTry again later`;
-            }
-            end = true;
-            req.sessionManager.destroySession(sessionId);
-          } else if (cleanText === '0') {
-            message = `Transaction cancelled\nNo charges applied\n\nThank you for using OUH`;
-            end = true;
-            req.sessionManager.destroySession(sessionId);
-          } else {
-            const calc = session.calculation;
-            const usdcAmount = (calc.usdcAmount / 1000000).toFixed(2);
-            const rateSource = calc.rateSource || 'Default';
-            const pythStatus = calc.pythEnabled ? '📊 Pyth' : '📈 Default';
-            
-            message = `Load Wallet\nAmt: ₦${session.amount.toLocaleString()}  Fee: ₦${calc.fee}\nBest Rate: ₦${calc.rate}/$1; ~${usdcAmount} USDC; ${rateSource} (${pythStatus})\n\n1. Confirm\n0. Cancel`;
-          }
-          break;
-        
-        case 'fast_track_airtime_confirm':
-          if (cleanText === '1') {
-            try {
-              const airtimeResult = await solanaService.createTransaction(
-                session.originalPhone,
-                session.pin,
-                session.amount,
-                'airtime'
-              );
-              
-              if (airtimeResult.success) {
-                const txIdDisplay = airtimeResult.signature.substring(0, 16);
-                
-                const recipientDisplay = session.recipient === session.originalPhone ?
-                  session.originalPhone : session.recipient;
-                
-                // OPTIMIZED: Removed rocket emoji
-                message = `✅ Success!\n₦${session.amount.toLocaleString()} airtime loaded\nTo: ${recipientDisplay}\nTx: ${txIdDisplay}...`;
-              } else {
-                message = `❌ Purchase failed\n${airtimeResult.error}\n\nTry again`;
+
+              console.log('💼 User wallet:', userData.walletAddress.substring(0, 8) + '...');
+
+              // Execute transaction based on service type
+              if (session.service === 'load_wallet') {
+                // Create USDC purchase transaction with total amount (including fee)
+                const txResult = await solanaService.createTransaction(
+                  displayNumber,
+                  session.pin || '0000', // Use session PIN or dummy for pre-verified
+                  session.totalAmount || session.amount, // Use total if available
+                  'crypto'
+                );
+
+                if (txResult.success) {
+                  console.log('✅ Crypto purchase successful:', txResult.transactionId);
+                  
+                  message = `✅ Success!\n\nCharged: ₦${session.totalAmount ? session.totalAmount.toLocaleString() : session.amount.toLocaleString()}\n${session.usdcAmount} USDC loaded\nWallet: ${userData.walletAddress.substring(0, 6)}...${userData.walletAddress.substring(userData.walletAddress.length - 4)}\n\nTx: ${txResult.signature.substring(0, 8)}...`;
+                } else {
+                  message = `❌ Transaction failed\n${txResult.error || 'Unknown error'}\n\nPlease try again`;
+                }
+              } else if (session.service === 'airtime') {
+                // Create airtime purchase transaction
+                const txResult = await solanaService.createTransaction(
+                  displayNumber,
+                  session.pin || '0000',
+                  session.amount,
+                  'airtime'
+                );
+
+                if (txResult.success) {
+                  console.log('✅ Airtime purchase successful:', txResult.transactionId);
+                  
+                  message = `✅ Success!\n\n₦${session.amount.toLocaleString()} Airtime sent\nTo: ${session.recipient}\n\nTx: ${txResult.signature.substring(0, 8)}...`;
+                } else {
+                  message = `❌ Transaction failed\n${txResult.error || 'Unknown error'}\n\nPlease try again`;
+                }
               }
-            } catch (error) {
-              message = `❌ Transaction failed\n${error.message}\n\nTry again later`;
-            }
-            end = true;
-            req.sessionManager.destroySession(sessionId);
-          } else if (cleanText === '0') {
-            message = `Transaction cancelled\nNo charges applied\n\nThank you for using OUH`;
-            end = true;
-            req.sessionManager.destroySession(sessionId);
-          } else {
-            const recipientDisplay = session.recipient === session.originalPhone ?
-              session.originalPhone : session.recipient;
-            
-            message = `Buy Airtime\nAmt: ₦${session.amount.toLocaleString()}  Fee: FREE\nTo: ${recipientDisplay}\n\n1. Confirm\n0. Cancel`;
-          }
-          break;
-          
-        case 'load_wallet_confirm':
-          if (cleanText === '1') {
-            session.stage = 'load_wallet_pin';
-            const usdcAmount = (session.calculation.usdcAmount / 1000000).toFixed(2);
-            
-            // OPTIMIZED: Simple PIN prompt
-            message = `🔒 Enter PIN\n₦${session.amount.toLocaleString()} → ${usdcAmount} USDC\n\nPIN:`;
-          } else if (cleanText === '0') {
-            message = `Transaction cancelled\nNo charges applied\n\nThank you for using OUH`;
-            end = true;
-            req.sessionManager.destroySession(sessionId);
-          } else {
-            const calc = session.calculation;
-            const usdcAmount = (calc.usdcAmount / 1000000).toFixed(2);
-            const rateSource = calc.rateSource || 'Default';
-            const pythStatus = calc.pythEnabled ? '📊 Pyth' : '📈 Default';
-            
-            message = `Load Wallet\nAmt: ₦${session.amount.toLocaleString()}  Fee: ₦${calc.fee}\nBest Rate: ₦${calc.rate}/$1; ~${usdcAmount} USDC; ${rateSource} (${pythStatus})\n\n1. Confirm\n0. Cancel`;
-          }
-          break;
-          
-        case 'load_wallet_pin':
-          if (solanaService.validatePin(cleanText)) {
-            try {
-              const txResult = await solanaService.createTransaction(
-                session.originalPhone,
-                cleanText,
-                session.amount,
-                'crypto'
-              );
-              
-              if (txResult.success) {
-                const usdcAmount = (session.calculation.usdcAmount / 1000000).toFixed(2);
-                const txIdDisplay = txResult.signature.substring(0, 16);
-                
-                // OPTIMIZED: Removed "To: phone" and rocket emoji
-                message = `✅ Success\n₦${session.amount.toLocaleString()} → ${usdcAmount} USDC\nTx: ${txIdDisplay}...`;
-              } else {
-                message = `❌ Purchase failed\n${txResult.error}\n\nTry again`;
-              }
-            } catch (error) {
-              message = `❌ Transaction failed\n${error.message}\n\nTry again later`;
-            }
-            end = true;
-            req.sessionManager.destroySession(sessionId);
-          } else {
-            session.attempts = (session.attempts || 0) + 1;
-            if (session.attempts >= 3) {
-              message = `Too many PIN attempts\nDial *789*${session.amount}# to retry`;
+
               end = true;
               req.sessionManager.destroySession(sessionId);
-            } else {
-              message = `PIN must be 4-6 digits\n\nPIN:`;
-            }
-          }
-          break;
-          
-        case 'airtime_confirm':
-          if (cleanText === '1') {
-            session.stage = 'airtime_pin';
-            // OPTIMIZED: Simple PIN prompt
-            message = `🔒 Enter PIN\n₦${session.amount.toLocaleString()} airtime\nTo: ${session.originalPhone}\n\nPIN:`;
-          } else if (cleanText === '0') {
-            message = `Transaction cancelled\nNo charges applied\n\nThank you for using OUH`;
-            end = true;
-            req.sessionManager.destroySession(sessionId);
-          } else {
-            message = `Buy Airtime\nAmt: ₦${session.amount.toLocaleString()}  Fee: FREE\nTo: ${session.originalPhone}\n\n1. Confirm\n0. Cancel`;
-          }
-          break;
-          
-        case 'airtime_pin':
-          if (solanaService.validatePin(cleanText)) {
-            try {
-              const airtimeResult = await solanaService.createTransaction(
-                session.originalPhone,
-                cleanText,
-                session.amount,
-                'airtime'
-              );
-              
-              if (airtimeResult.success) {
-                const txIdDisplay = airtimeResult.signature.substring(0, 12);
-                // OPTIMIZED: 73 chars
-                message = `✅ Success\n₦${session.amount.toLocaleString()} airtime\nTo:${session.originalPhone}\nTx:${txIdDisplay}`;
-              } else {
-                message = `Purchase failed\n${airtimeResult.error}`;
-              }
+
             } catch (error) {
-              message = `Transaction failed\nTry later`;
-            }
-            end = true;
-            req.sessionManager.destroySession(sessionId);
-          } else {
-            session.attempts = (session.attempts || 0) + 1;
-            if (session.attempts >= 3) {
-              message = `Too many PIN attempts\nDial *789*${session.amount}# to retry`;
+              console.error('❌ Transaction execution error:', error);
+              message = `❌ Transaction failed\n${error.message}\n\nPlease try again`;
               end = true;
               req.sessionManager.destroySession(sessionId);
-            } else {
-              message = `PIN must be 4-6 digits\n\nPIN:`;
             }
+
+          } else if (text === '2') {
+            message = `Transaction cancelled\n\nDial *789*AMOUNT*PIN# to try again`;
+            end = true;
+            req.sessionManager.destroySession(sessionId);
+          } else {
+            message = `Invalid option\n\n1. Confirm\n2. Cancel`;
           }
           break;
-          
+
         default:
-          message = `Session expired\nDial *789*${session.amount}# to retry`;
+          message = `Session error\nPlease try again`;
           end = true;
           req.sessionManager.destroySession(sessionId);
       }
-      
-    } else {
-      message = `Invalid session\nStart new session`;
-      end = true;
-      req.sessionManager.destroySession(sessionId);
+
+      if (!end) {
+        req.sessionManager.updateSession(sessionId, session);
+      }
     }
-    
-    // Validate message length before sending
-    if (!validateUssdLength(message)) {
-      console.error(`Message too long: ${message.length} chars`);
-      // Ultra-compact fallback
-      message = message.substring(0, 157) + '...';
-    }
-    
-    // Update session if not ending
-    if (!end && session) {
-      req.sessionManager.updateSession(sessionId, session);
-    }
-    
+
     res.json({
-      message,
-      end,
-      timestamp: new Date().toISOString(),
-      securityLevel: 'enhanced'
+      message: message,
+      end: end,
+      sessionId: sessionId,
+      timestamp: new Date().toISOString()
     });
-    
+
   } catch (error) {
     handleSecureError(error, res, req.body.sessionId, req.sessionManager);
   }
 });
 
-/**
- * End a USSD session with proper cleanup
- * Route: POST /api/ussd/end
- */
+// Wallet callback
+router.post('/wallet/callback', async (req, res) => {
+  try {
+    const { connectionId, walletAddress, signature, message: signedMessage } = req.body;
+
+    console.log('🔗 Wallet Callback:', {
+      connectionId: connectionId?.substring(0, 8),
+      wallet: walletAddress?.substring(0, 8) + '...',
+      signature: signature ? 'present' : 'missing'
+    });
+
+    if (!connectionId || !walletAddress) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: connectionId and walletAddress'
+      });
+    }
+
+    const connection = global.walletConnections?.[connectionId];
+    
+    if (!connection) {
+      return res.status(404).json({
+        success: false,
+        error: 'Connection not found or expired'
+      });
+    }
+
+    if (connection.status === 'connected') {
+      return res.json({
+        success: true,
+        message: 'Wallet already linked',
+        phone: connection.phoneNumber,
+        walletAddress: connection.walletAddress
+      });
+    }
+
+    if (Date.now() > connection.expiresAt) {
+      delete global.walletConnections[connectionId];
+      return res.status(410).json({
+        success: false,
+        error: 'Connection expired. Please dial *789# to try again.'
+      });
+    }
+
+    const linkResult = await solanaService.linkWallet(
+      connection.phoneNumber,
+      connection.pin,
+      walletAddress,
+      {
+        signature: signature,
+        message: signedMessage
+      }
+    );
+
+    if (linkResult.success) {
+      connection.status = 'connected';
+      connection.walletAddress = walletAddress;
+      connection.connectedAt = Date.now();
+
+      res.json({
+        success: true,
+        message: 'Wallet linked successfully!',
+        phone: connection.phoneNumber,
+        phoneNumber: connection.phoneNumber,
+        walletAddress: walletAddress,
+        timestamp: new Date().toISOString()
+      });
+
+      setTimeout(() => {
+        delete global.walletConnections[connectionId];
+      }, 5 * 60 * 1000);
+    } else {
+      res.status(400).json({
+        success: false,
+        error: linkResult.error
+      });
+    }
+
+  } catch (error) {
+    console.error('❌ Wallet callback error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to process wallet connection',
+      details: error.message
+    });
+  }
+});
+
 router.post('/end', (req, res) => {
   try {
     const { sessionId } = req.body;
-    
-    console.log('USSD End:', {
-      sessionId: sessionId?.slice(-8),
-      timestamp: new Date().toISOString()
-    });
-    
+    console.log('🔚 USSD End:', sessionId?.slice(-8));
+
     if (sessionId && req.sessionManager) {
-      const destroyed = req.sessionManager.destroySession(sessionId);
-      console.log('Session cleanup:', destroyed ? 'successful' : 'session not found');
+      req.sessionManager.destroySession(sessionId);
     }
-    
-    // OPTIMIZED: 52 chars
+
     res.json({
-      message: 'Session ended\n\nThank you!\n\nDial *789#',
-      end: true,
-      timestamp: new Date().toISOString(),
-      securityLevel: 'enhanced'
-    });
-  } catch (error) {
-    console.error('Error ending session:', error);
-    res.status(500).json({
-      error: 'Failed to end session securely',
+      message: 'Session ended',
       end: true,
       timestamp: new Date().toISOString()
     });
-  }
-});
-
-/**
- * Health check for Solana connection with security status + Pyth
- * Route: GET /api/ussd/health/solana
- */
-router.get('/health/solana', async (req, res) => {
-  try {
-    const health = await solanaService.healthCheck();
-    const securityAnalytics = solanaService.getSecurityAnalytics();
-    
-    res.json({
-      service: 'OUH! USSD API',
-      version: '2.0.0',
-      solana: health.status === 'OK' ? 'CONNECTED' : 'DISCONNECTED',
-      pyth: health.pythIntegration ? health.pythIntegration.status : 'unknown',
-      security: 'ENHANCED',
-      details: {
-        solanaHealth: health,
-        securityAnalytics: securityAnalytics
-      },
-      endpoints: {
-        start: 'POST /api/ussd/start',
-        continue: 'POST /api/ussd/continue',
-        end: 'POST /api/ussd/end'
-      },
-      timestamp: new Date().toISOString()
-    });
   } catch (error) {
-    console.error('Health check failed:', error);
+    console.error('❌ Error in /end:', error);
     res.status(500).json({
-      service: 'OUH! USSD API',
-      version: '2.0.0',
-      solana: 'ERROR',
-      security: 'ENHANCED',
-      error: error.message,
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-/**
- * Get USSD service statistics (admin endpoint)
- * Route: GET /api/ussd/stats
- */
-router.get('/stats', (req, res) => {
-  try {
-    const sessionStats = req.sessionManager ? req.sessionManager.getSecurityReport() : null;
-    const solanaStats = solanaService.getSecurityAnalytics();
-    
-    res.json({
-      service: 'OUH! USSD API Statistics',
-      version: '2.0.0',
-      sessions: sessionStats,
-      solana: solanaStats,
-      uptime: process.uptime(),
-      memory: {
-        used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024) + 'MB',
-        total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024) + 'MB'
-      },
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Stats retrieval failed:', error);
-    res.status(500).json({
-      error: 'Failed to retrieve statistics',
+      error: 'Failed to end session',
       timestamp: new Date().toISOString()
     });
   }

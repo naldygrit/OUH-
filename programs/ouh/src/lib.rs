@@ -160,7 +160,7 @@ pub enum TransactionStatus {
 
 // Account Size Implementations
 impl UserAccount {
-    pub const LEN: usize = 8 + 14 + 32 + 32 + 8 + 8 + 1;
+    pub const LEN: usize = 8 + 14 + 32 + 32 + 8 + 8 + 1; //103 bytes
 }
 
 impl TransactionAccount {

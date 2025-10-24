@@ -4,9 +4,9 @@ import { PhoneManager } from '../services/PhoneManager';
 import { USSDService } from '../services/USSDService';
 
 interface AndroidFrameProps {
-  phoneNumber: string;      // e.g., "08031234567"
-  isRegistered: boolean;    // whether this phone is already registered
-  onDialClick: (payload: string) => void; // callback for non-USSD dials or logging
+  phoneNumber: string;
+  isRegistered: boolean;
+  onDialClick: (payload: string) => void;
 }
 
 type Screen = 'home' | 'dialer' | 'messages';
@@ -16,29 +16,16 @@ const AndroidFrame: React.FC<AndroidFrameProps> = ({
   isRegistered,
   onDialClick
 }) => {
-  // UI navigation
   const [currentScreen, setCurrentScreen] = useState<Screen>('home');
-  
-  // Real-time clock state
   const [currentTime, setCurrentTime] = useState(new Date());
-  
-  // Dialer input and simple editing
   const [dialedNumber, setDialedNumber] = useState<string>('');
-  
-  // Session phone number (changes on each *789# call)
   const [sessionPhoneNumber, setSessionPhoneNumber] = useState<string>(phoneNumber);
-  const [sessionRegistered, setSessionRegistered] = useState<boolean>(isRegistered);
-  
-  // USSD overlays
   const [isProcessingUSSD, setIsProcessingUSSD] = useState<boolean>(false);
   const [showUSSDSheet, setShowUSSDSheet] = useState<boolean>(false);
-  
-  // USSD session state
   const [ussdResponse, setUssdResponse] = useState<string>('');
   const [ussdInput, setUssdInput] = useState<string>('');
   const [sessionId, setSessionId] = useState<string>('');
 
-  // Real-time clock effect
   useEffect(() => {
     const timer = setInterval(() => {
       setCurrentTime(new Date());
@@ -46,7 +33,26 @@ const AndroidFrame: React.FC<AndroidFrameProps> = ({
     return () => clearInterval(timer);
   }, []);
 
-  // Format time for display
+  // Watch for wallet connection trigger
+  useEffect(() => {
+    if (ussdResponse.includes('[WALLET_CONNECT:')) {
+      const match = ussdResponse.match(/\[WALLET_CONNECT:([a-f0-9]+)\]/);
+      if (match) {
+        const connectionId = match[1];
+        console.log('🔗 Detected wallet connection trigger:', connectionId);
+        
+        // Clean the message
+        const cleanMessage = ussdResponse.replace(/\[WALLET_CONNECT:[a-f0-9]+\]/, '').trim();
+        setUssdResponse(cleanMessage);
+        
+        // Trigger wallet connection
+        setTimeout(() => {
+          handleWalletConnection(connectionId);
+        }, 1500);
+      }
+    }
+  }, [ussdResponse]);
+
   const formatTime = (date: Date) => {
     return date.toLocaleTimeString('en-GB', {
       hour: '2-digit',
@@ -55,7 +61,6 @@ const AndroidFrame: React.FC<AndroidFrameProps> = ({
     });
   };
 
-  // Format date for display
   const formatDate = (date: Date) => {
     return date.toLocaleDateString('en-GB', {
       weekday: 'long',
@@ -64,18 +69,53 @@ const AndroidFrame: React.FC<AndroidFrameProps> = ({
     });
   };
 
-  // Check if we're on a PIN step (for password masking)
   const isPinStep = ussdResponse.toLowerCase().includes('pin');
-
-  // ----- Helpers -----
   const addToDialed = (digit: string) => setDialedNumber(prev => prev + digit);
   const clearLastDigit = () => setDialedNumber(prev => prev.slice(0, -1));
-  const clearAllDigits = () => setDialedNumber('');
 
-  const parsePurchaseAmount = (code: string): number | null => {
-    // *789*AMOUNT#
-    const m = code.match(/^\*789\*(\d+)#$/);
-    return m ? parseInt(m[1], 10) : null;
+  // Parse USSD code and extract components
+  const parseUSSDCode = (code: string): {
+    type: 'register' | 'purchase' | 'invalid';
+    amount?: number;
+    pin?: string;
+    recipient?: string;
+  } | null => {
+    // Registration: *789#
+    if (code === '*789#') {
+      return { type: 'register' };
+    }
+
+    // Pattern 1: *789*RECIPIENT*AMOUNT*PIN# (send to other)
+    let match = code.match(/^\*789\*(\d{11})\*(\d+)\*(\d{4,6})#$/);
+    if (match) {
+      return {
+        type: 'purchase',
+        recipient: match[1],
+        amount: parseInt(match[2], 10),
+        pin: match[3]
+      };
+    }
+
+    // Pattern 2: *789*AMOUNT*PIN# (buy for self)
+    match = code.match(/^\*789\*(\d+)\*(\d{4,6})#$/);
+    if (match) {
+      return {
+        type: 'purchase',
+        amount: parseInt(match[1], 10),
+        pin: match[2]
+      };
+    }
+
+    // Pattern 3: *789*AMOUNT# (fallback)
+    match = code.match(/^\*789\*(\d+)#$/);
+    if (match) {
+      return {
+        type: 'purchase',
+        amount: parseInt(match[1], 10)
+      };
+    }
+
+    return { type: 'invalid' };
   };
 
   const withinAmountBounds = (n: number) => n >= 100 && n <= 50000;
@@ -85,7 +125,53 @@ const AndroidFrame: React.FC<AndroidFrameProps> = ({
     setSessionId('');
   };
 
-  // ----- Backend-integrated USSD handling -----
+  const handleWalletConnection = async (connectionId: string) => {
+    console.log('🔗 Initiating mock wallet connection for:', connectionId);
+    
+    const mockWalletAddress = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
+    
+    try {
+      setUssdResponse('🔗 Opening wallet app...\n\nPlease approve connection in your wallet');
+      
+      // Simulate user approval delay
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      setUssdResponse('✅ Wallet approved\n\nLinking to phone number...');
+      
+      // Call backend webhook
+      const result = await USSDService.completeWalletConnection(
+        connectionId,
+        mockWalletAddress
+      );
+      
+      if (result.success) {
+        console.log('✅ Wallet linked successfully:', result);
+        
+        // Register phone
+        PhoneManager.registerPhone(sessionPhoneNumber);
+        
+        setUssdResponse(
+          `✅ Wallet Linked!\n\n` +
+          `Phone: ${result.phone}\n` +
+          `Wallet: ${mockWalletAddress.substring(0, 4)}...${mockWalletAddress.slice(-4)}\n\n` +
+          `Dial *789*AMOUNT*PIN# to transact`
+        );
+        
+        // Auto-close after 4 seconds
+        setTimeout(() => {
+          setShowUSSDSheet(false);
+          resetSession();
+        }, 4000);
+      } else {
+        throw new Error(result.error || 'Wallet linking failed');
+      }
+      
+    } catch (err: any) {
+      console.error('❌ Wallet connection error:', err);
+      setUssdResponse(`❌ Wallet linking failed\n\n${err.message}\n\nPress Cancel to exit`);
+    }
+  };
+
   const handleCall = async () => {
     const input = dialedNumber.trim();
     const isUSSD = input.includes('*') && input.includes('#');
@@ -95,53 +181,89 @@ const AndroidFrame: React.FC<AndroidFrameProps> = ({
       return;
     }
 
-    // Generate new phone number for each *789# call
-    let currentSessionPhone = sessionPhoneNumber;
-    if (input === '*789#') {
-      currentSessionPhone = PhoneManager.generateRandomNumber();
-      setSessionPhoneNumber(currentSessionPhone);
-    }
-
-    // Generate session ID based on USSD type
-    let newSessionId = '';
-    const amount = parsePurchaseAmount(input);
+    // Parse USSD code
+    const parsed = parseUSSDCode(input);
     
-    if (input === '*789#') {
-      newSessionId = `registration_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    } else if (amount !== null) {
-      if (!withinAmountBounds(amount)) {
-        setIsProcessingUSSD(true);
-        setTimeout(() => {
-          setIsProcessingUSSD(false);
-          setShowUSSDSheet(true);
-          setUssdResponse('Amount must be between N100 and N50,000.');
-          setUssdInput('');
-        }, 600);
-        return;
-      }
-      newSessionId = `purchase_${amount}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    } else {
+    if (!parsed || parsed.type === 'invalid') {
       setIsProcessingUSSD(true);
       setTimeout(() => {
         setIsProcessingUSSD(false);
         setShowUSSDSheet(true);
-        setUssdResponse('Invalid USSD code.\n\nValid codes:\n*789# - Register\n*789*AMOUNT# - Purchase');
+        setUssdResponse('Invalid USSD code.\n\nValid formats:\n*789# - Register\n*789*AMOUNT*PIN# - Purchase\n*789*RECIPIENT*AMOUNT*PIN# - Send');
         setUssdInput('');
       }, 600);
       return;
+    }
+
+    // Generate new phone number for registration
+    let currentSessionPhone = sessionPhoneNumber;
+    if (parsed.type === 'register') {
+      currentSessionPhone = PhoneManager.generateRandomNumber();
+      setSessionPhoneNumber(currentSessionPhone);
+    }
+
+    // Validate amount if present
+    if (parsed.amount && !withinAmountBounds(parsed.amount)) {
+      setIsProcessingUSSD(true);
+      setTimeout(() => {
+        setIsProcessingUSSD(false);
+        setShowUSSDSheet(true);
+        setUssdResponse('Amount must be between N100 and N50,000.');
+        setUssdInput('');
+      }, 600);
+      return;
+    }
+
+    // Generate session ID matching backend expectations
+    const timestamp = Date.now();
+    let newSessionId = '';
+    
+    if (parsed.type === 'register') {
+      newSessionId = `registration_${timestamp}`;
+    } else if (parsed.type === 'purchase') {
+      // Match backend patterns exactly
+      if (parsed.recipient && parsed.amount && parsed.pin) {
+        // Pattern 1: purchase_RECIPIENT_AMOUNT_PIN_TIMESTAMP
+        newSessionId = `purchase_${parsed.recipient}_${parsed.amount}_${parsed.pin}_${timestamp}`;
+      } else if (parsed.amount && parsed.pin) {
+        // Pattern 2: purchase_AMOUNT_PIN_TIMESTAMP
+        newSessionId = `purchase_${parsed.amount}_${parsed.pin}_${timestamp}`;
+      } else if (parsed.amount) {
+        // Pattern 3: purchase_AMOUNT_TIMESTAMP
+        newSessionId = `purchase_${parsed.amount}_${timestamp}`;
+      }
     }
 
     setSessionId(newSessionId);
     setIsProcessingUSSD(true);
 
     try {
-      // Call your backend API
-      const response = await USSDService.startSession(newSessionId, currentSessionPhone);
+      // ✅ FIX: Pass deviceType = 'smartphone'
+      const response = await USSDService.startSession(
+        newSessionId, 
+        currentSessionPhone,
+        'smartphone'  // ✅ CRITICAL: Pass device type
+      );
       
       setIsProcessingUSSD(false);
       setShowUSSDSheet(true);
       setUssdResponse(response.message);
       setUssdInput('');
+
+      // Auto-register on wallet creation
+      if (response.message.includes('✅ Wallet Created') ||
+          response.message.includes('Wallet Created')) {
+        PhoneManager.registerPhone(currentSessionPhone);
+        console.log('🎉 Phone registered:', currentSessionPhone);
+      }
+
+      // Auto-close on end
+      if (response.end) {
+        setTimeout(() => {
+          setShowUSSDSheet(false);
+          resetSession();
+        }, 3000);
+      }
 
     } catch (error) {
       console.error('Backend connection error:', error);
@@ -166,46 +288,44 @@ const AndroidFrame: React.FC<AndroidFrameProps> = ({
 
   const handleUSSDSend = async () => {
     const input = (ussdInput || '').trim();
-    
     if (!input) {
       return;
     }
 
     try {
-      // Use backend API instead of local logic
       const response = await USSDService.continueSession(sessionId, sessionPhoneNumber, input);
-      
       setUssdResponse(response.message);
       setUssdInput('');
 
-      // If session ended by backend
+      // Auto-register on wallet creation/linking
+      if (response.message.includes('✅ Wallet Created') ||
+          response.message.includes('Wallet Created') ||
+          response.message.includes('✅ Wallet Linked')) {
+        PhoneManager.registerPhone(sessionPhoneNumber);
+        console.log('🎉 Phone registered:', sessionPhoneNumber);
+      }
+
       if (response.end) {
         setTimeout(() => {
           setShowUSSDSheet(false);
           resetSession();
         }, 4000);
       }
-
     } catch (error) {
       console.error('USSD continue error:', error);
       setUssdResponse(`Error: ${error instanceof Error ? error.message : 'Unknown error'}\n\nPress Cancel to exit.`);
     }
   };
 
-  // ----- Screens -----
   const renderHomeScreen = () => (
     <div className="samsung-screen">
       <div className="samsung-home">
-        {/* Real-Time Widget */}
         <div className="samsung-time-widget">
           <div className="samsung-time">{formatTime(currentTime)}</div>
           <div className="samsung-date">{formatDate(currentTime)}</div>
         </div>
-
-        {/* App Grid */}
         <div className="samsung-app-grid">
           <div className="app-grid-row">
-            {/* Phone */}
             <button
               className="samsung-app-icon"
               onClick={() => setCurrentScreen('dialer')}
@@ -217,8 +337,6 @@ const AndroidFrame: React.FC<AndroidFrameProps> = ({
               </div>
               <span className="samsung-app-label">Phone</span>
             </button>
-
-            {/* Messages - Authentic Samsung UI Icon */}
             <button
               className="samsung-app-icon"
               onClick={() => setCurrentScreen('messages')}
@@ -239,7 +357,6 @@ const AndroidFrame: React.FC<AndroidFrameProps> = ({
   const renderDialerScreen = () => (
     <div className="samsung-screen">
       <div className="samsung-dialer">
-        {/* Header */}
         <div className="samsung-dialer-header">
           <h2>Phone</h2>
           <div className="samsung-header-actions">
@@ -248,10 +365,8 @@ const AndroidFrame: React.FC<AndroidFrameProps> = ({
           </div>
         </div>
 
-        {/* Number Display Area */}
         <div className="samsung-number-area">
           <div className="samsung-dialed-number">{dialedNumber || ' '}</div>
-          {/* Show link always (dim if empty) to match One UI */}
           <button
             className="samsung-add-contact"
             style={{ opacity: dialedNumber ? 1 : 0.35 }}
@@ -260,7 +375,6 @@ const AndroidFrame: React.FC<AndroidFrameProps> = ({
           </button>
         </div>
 
-        {/* Keypad */}
         <div className="samsung-keypad">
           <div className="samsung-keypad-row">
             <button className="samsung-keypad-key" onClick={() => addToDialed('1')}>
@@ -275,7 +389,6 @@ const AndroidFrame: React.FC<AndroidFrameProps> = ({
               <span className="samsung-key-letters">DEF</span>
             </button>
           </div>
-
           <div className="samsung-keypad-row">
             <button className="samsung-keypad-key" onClick={() => addToDialed('4')}>
               <span className="samsung-key-number">4</span>
@@ -290,7 +403,6 @@ const AndroidFrame: React.FC<AndroidFrameProps> = ({
               <span className="samsung-key-letters">MNO</span>
             </button>
           </div>
-
           <div className="samsung-keypad-row">
             <button className="samsung-keypad-key" onClick={() => addToDialed('7')}>
               <span className="samsung-key-number">7</span>
@@ -305,7 +417,6 @@ const AndroidFrame: React.FC<AndroidFrameProps> = ({
               <span className="samsung-key-letters">WXYZ</span>
             </button>
           </div>
-
           <div className="samsung-keypad-row">
             <button className="samsung-keypad-key" onClick={() => addToDialed('*')}>
               <span className="samsung-key-number">*</span>
@@ -320,7 +431,6 @@ const AndroidFrame: React.FC<AndroidFrameProps> = ({
           </div>
         </div>
 
-        {/* Action Bar — single SIM (always visible) */}
         <div className="samsung-action-bar">
           <button
             className="samsung-action-btn message-btn"
@@ -344,7 +454,6 @@ const AndroidFrame: React.FC<AndroidFrameProps> = ({
           </button>
         </div>
 
-        {/* Bottom Tabs */}
         <div className="samsung-bottom-tabs">
           <div className="samsung-tab active">
             <span className="samsung-tab-icon">⊞</span>
@@ -364,7 +473,6 @@ const AndroidFrame: React.FC<AndroidFrameProps> = ({
           </div>
         </div>
 
-        {/* USSD Processing Toast */}
         {isProcessingUSSD && (
           <div className="samsung-ussd-toast">
             <div className="samsung-toast-content">
@@ -374,7 +482,6 @@ const AndroidFrame: React.FC<AndroidFrameProps> = ({
           </div>
         )}
 
-        {/* USSD Sheet */}
         {showUSSDSheet && (
           <div className="samsung-ussd-overlay">
             <div className="samsung-ussd-sheet">
@@ -383,27 +490,26 @@ const AndroidFrame: React.FC<AndroidFrameProps> = ({
               </div>
               <div className="samsung-sheet-content">
                 <pre className="samsung-ussd-message">{ussdResponse}</pre>
-                {/* Mask + numeric-only + max 4 when on PIN steps */}
                 <input
                   className="samsung-ussd-input"
                   type={isPinStep ? 'password' : 'text'}
                   inputMode={isPinStep ? 'numeric' : 'text'}
                   pattern={isPinStep ? '\\d*' : undefined}
-                  maxLength={isPinStep ? 4 : 30}
+                  maxLength={isPinStep ? 6 : 30}
                   autoComplete="off"
                   spellCheck={false}
                   value={ussdInput}
                   onChange={(e) => {
                     const val = e.target.value;
                     if (isPinStep) {
-                      const digits = val.replace(/\D/g, '').slice(0, 4);
+                      const digits = val.replace(/\D/g, '').slice(0, 6);
                       setUssdInput(digits);
                     } else {
                       setUssdInput(val);
                     }
                   }}
                   onPaste={(e) => {
-                    if (isPinStep) e.preventDefault(); // optional: block paste for PIN
+                    if (isPinStep) e.preventDefault();
                   }}
                   placeholder={isPinStep ? 'Enter PIN (4-6 digits)' : 'Enter your response'}
                 />
@@ -437,18 +543,17 @@ const AndroidFrame: React.FC<AndroidFrameProps> = ({
           <p style={{ fontSize: '0.85rem', opacity: 0.7, marginTop: '12px' }}>
             Each time you dial *789#, a new random Nigerian phone number is generated for the session.
           </p>
-          
-          {/* Backend Connection Status */}
-          <div style={{ 
-            marginTop: '16px', 
-            padding: '12px', 
-            backgroundColor: '#f0f0f0', 
+          <div style={{
+            marginTop: '16px',
+            padding: '12px',
+            backgroundColor: '#f0f0f0',
             borderRadius: '8px',
             fontSize: '0.85rem'
           }}>
             <strong>Backend Status:</strong><br/>
             API URL: {process.env.REACT_APP_API_URL || 'http://localhost:3002'}<br/>
-            <em>Try dialing *789# to test backend connection</em>
+            Device Type: <strong>Smartphone</strong> ✅<br/>
+            <em>Try dialing *789# to test wallet linking</em>
           </div>
         </div>
       </div>
@@ -458,10 +563,7 @@ const AndroidFrame: React.FC<AndroidFrameProps> = ({
   return (
     <div className="samsung-frame">
       <div className="samsung-device">
-        {/* Punch Hole */}
         <div className="samsung-punch-hole" />
-
-        {/* Status Bar with Real-Time */}
         <div className="samsung-status-bar">
           <div className="samsung-status-left">
             <span className="samsung-time-status">{formatTime(currentTime)}</span>
@@ -473,12 +575,10 @@ const AndroidFrame: React.FC<AndroidFrameProps> = ({
           </div>
         </div>
 
-        {/* Screen Content */}
         {currentScreen === 'home' && renderHomeScreen()}
         {currentScreen === 'dialer' && renderDialerScreen()}
         {currentScreen === 'messages' && renderMessagesScreen()}
 
-        {/* Navigation Bar with App Icons */}
         <div className="samsung-navbar">
           <div className="samsung-nav-btn" onClick={() => setCurrentScreen('home')}>◀</div>
           <div className="samsung-nav-btn home" onClick={() => setCurrentScreen('home')}>⚫</div>
