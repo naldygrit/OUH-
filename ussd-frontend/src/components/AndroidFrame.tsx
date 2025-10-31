@@ -40,11 +40,11 @@ const AndroidFrame: React.FC<AndroidFrameProps> = ({
       if (match) {
         const connectionId = match[1];
         console.log('🔗 Detected wallet connection trigger:', connectionId);
-        
+
         // Clean the message
         const cleanMessage = ussdResponse.replace(/\[WALLET_CONNECT:[a-f0-9]+\]/, '').trim();
         setUssdResponse(cleanMessage);
-        
+
         // Trigger wallet connection
         setTimeout(() => {
           handleWalletConnection(connectionId);
@@ -127,36 +127,36 @@ const AndroidFrame: React.FC<AndroidFrameProps> = ({
 
   const handleWalletConnection = async (connectionId: string) => {
     console.log('🔗 Initiating mock wallet connection for:', connectionId);
-    
+
     const mockWalletAddress = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
-    
+
     try {
       setUssdResponse('🔗 Opening wallet app...\n\nPlease approve connection in your wallet');
-      
+
       // Simulate user approval delay
       await new Promise(resolve => setTimeout(resolve, 2000));
-      
+
       setUssdResponse('✅ Wallet approved\n\nLinking to phone number...');
-      
+
       // Call backend webhook
       const result = await USSDService.completeWalletConnection(
         connectionId,
         mockWalletAddress
       );
-      
+
       if (result.success) {
         console.log('✅ Wallet linked successfully:', result);
-        
+
         // Register phone
         PhoneManager.registerPhone(sessionPhoneNumber);
-        
+
         setUssdResponse(
           `✅ Wallet Linked!\n\n` +
           `Phone: ${result.phone}\n` +
           `Wallet: ${mockWalletAddress.substring(0, 4)}...${mockWalletAddress.slice(-4)}\n\n` +
           `Dial *789*AMOUNT*PIN# to transact`
         );
-        
+
         // Auto-close after 4 seconds
         setTimeout(() => {
           setShowUSSDSheet(false);
@@ -165,7 +165,7 @@ const AndroidFrame: React.FC<AndroidFrameProps> = ({
       } else {
         throw new Error(result.error || 'Wallet linking failed');
       }
-      
+
     } catch (err: any) {
       console.error('❌ Wallet connection error:', err);
       setUssdResponse(`❌ Wallet linking failed\n\n${err.message}\n\nPress Cancel to exit`);
@@ -183,7 +183,7 @@ const AndroidFrame: React.FC<AndroidFrameProps> = ({
 
     // Parse USSD code
     const parsed = parseUSSDCode(input);
-    
+
     if (!parsed || parsed.type === 'invalid') {
       setIsProcessingUSSD(true);
       setTimeout(() => {
@@ -217,7 +217,7 @@ const AndroidFrame: React.FC<AndroidFrameProps> = ({
     // Generate session ID matching backend expectations
     const timestamp = Date.now();
     let newSessionId = '';
-    
+
     if (parsed.type === 'register') {
       newSessionId = `registration_${timestamp}`;
     } else if (parsed.type === 'purchase') {
@@ -240,11 +240,11 @@ const AndroidFrame: React.FC<AndroidFrameProps> = ({
     try {
       // ✅ FIX: Pass deviceType = 'smartphone'
       const response = await USSDService.startSession(
-        newSessionId, 
+        newSessionId,
         currentSessionPhone,
         'smartphone'  // ✅ CRITICAL: Pass device type
       );
-      
+
       setIsProcessingUSSD(false);
       setShowUSSDSheet(true);
       setUssdResponse(response.message);

@@ -1,0 +1,461 @@
+import React, { useState, useCallback, useEffect } from 'react';
+import PhoneFrame from './components/PhoneFrame';
+import DeviceToggle from './components/DeviceToggle';
+import AndroidFrame from './components/AndroidFrame';
+import SmartphoneOverlay from './components/SmartphoneOverlay';
+import { USSDService } from './services/USSDService';
+import { PhoneManager } from './services/PhoneManager';
+import { MessageFormatter } from './services/MessageFormatter';
+import { AppState, KeypadKey, USSDSession, DeviceType, PhoneProfile } from './types';
+import './styles/App.css';
+
+const App: React.FC = () => {
+  const [deviceType, setDeviceType] = useState<DeviceType>('basic');
+  const [phoneProfile, setPhoneProfile] = useState<PhoneProfile | null>(null);
+  const [appState, setAppState] = useState<AppState>('idle');
+  const [dialInput, setDialInput] = useState('');
+  const [ussdResponse, setUssdResponse] = useState('');
+  const [session, setSession] = useState<USSDSession | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [showSmartphoneOverlay, setShowSmartphoneOverlay] = useState(false);
+
+  // Initialize phone profile on device change
+  useEffect(() => {
+    const profile = PhoneManager.createPhoneProfile(deviceType);
+    setPhoneProfile(profile);
+    resetToIdle();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deviceType]);
+
+  const resetToIdle = useCallback(() => {
+    setAppState('idle');
+    setDialInput('');
+    setUssdResponse('');
+    setSession(null);
+    setError(null);
+    setLoading(false);
+    setShowSmartphoneOverlay(false);
+  }, []);
+
+  const handleDeviceToggle = (newDeviceType: DeviceType) => {
+    setDeviceType(newDeviceType);
+  };
+
+  const handleAndroidDial = async (code: string) => {
+    if (!phoneProfile) return;
+    
+    console.log('📞 Android Dialing:', code, 'on', phoneProfile.displayNumber);
+    setDialInput(code);
+    setAppState('dialing');
+    setLoading(true);
+    setError(null);
+    setShowSmartphoneOverlay(true);
+
+    try {
+      let sessionId = '';
+      
+      if (code === '*789#') {
+        // Registration flow
+        sessionId = `registration_${Date.now()}`;
+        console.log('📝 Starting Registration Flow');
+      } else {
+        // Check for purchase flow - support 3 patterns
+        let match;
+        
+        // Try Pattern 2: *789*RECIPIENT*AMOUNT*PIN#
+        match = code.match(/^\*789\*(\d{11})\*(\d+)\*(\d{4,6})#$/);
+        if (match) {
+          const [, recipient, amount, pin] = match;
+          if (!PhoneManager.isRegistered(phoneProfile.number)) {
+            throw new Error(`Phone ${phoneProfile.displayNumber} not registered. Dial *789# first.`);
+          }
+          sessionId = `purchase_${recipient}_${amount}_${pin}_${Date.now()}`;
+          console.log('📤 Pattern 2: Send to', recipient, 'Amount:', amount);
+        }
+
+        // Try Pattern 1: *789*AMOUNT*PIN#
+        // FIX: Changed from dialInput to code
+        if (!sessionId) {
+          match = code.match(/^\*789\*(\d+)\*(\d{4,6})#$/);
+          if (match) {
+            const [, amount, pin] = match;
+            console.log('🔍 DEBUG - Matched amount:', amount, 'pin:', pin);
+            if (!PhoneManager.isRegistered(phoneProfile.number)) {
+              throw new Error(`Phone ${phoneProfile.displayNumber} not registered. Dial *789# first.`);
+            }
+            sessionId = `purchase_${amount}_${pin}_${Date.now()}`;
+            console.log('🔍 DEBUG - Created sessionId:', sessionId);
+            console.log('💰 Pattern 1: Buy for self, Amount:', amount);
+          }
+        }
+
+        // Try Pattern 3: *789*AMOUNT# (fallback)
+        if (!sessionId) {
+          match = code.match(/^\*789\*(\d+)#$/);
+          if (match) {
+            const [, amount] = match;
+            if (!PhoneManager.isRegistered(phoneProfile.number)) {
+              throw new Error(`Phone ${phoneProfile.displayNumber} not registered. Dial *789# first.`);
+            }
+            sessionId = `purchase_${amount}_${Date.now()}`;
+            console.log('📋 Pattern 3: Fallback flow, Amount:', amount);
+          }
+        }
+
+        if (!sessionId) {
+          throw new Error('Invalid USSD code. Use *789# to register or *789*AMOUNT*PIN# to purchase.');
+        }
+      }
+
+      const response = await USSDService.startSession(sessionId, phoneProfile.number);
+      
+      // Format message based on device type
+      const formattedMessage = MessageFormatter.formatMessage(response.message, deviceType);
+      
+      setSession({
+        sessionId,
+        phoneNumber: phoneProfile.number,
+        stage: 'started',
+        flowType: sessionId.includes('registration') ? 'registration' : 'purchase',
+        createdAt: Date.now()
+      });
+      
+      setUssdResponse(formattedMessage.content);
+      setAppState('ussd_active');
+      setDialInput('');
+    } catch (err: any) {
+      console.error('❌ Dial Error:', err);
+      setError(err.message);
+      setAppState('idle');
+      setDialInput('');
+      setShowSmartphoneOverlay(false);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleKeyPress = async (key: KeypadKey) => {
+    console.log('🔘 Key Pressed:', key, '| App State:', appState, '| Device:', deviceType);
+    
+    if (loading) return;
+
+    if (key === 'End') {
+      if (session?.sessionId) {
+        await USSDService.endSession(session.sessionId);
+      }
+      resetToIdle();
+      return;
+    }
+
+    if (appState === 'idle' || appState === 'dialing') {
+      // DIALING MODE
+      if (key === 'Call') {
+        await handleDial();
+      } else if (key === '#') {
+        setDialInput(prev => prev + '#');
+        setAppState('dialing');
+      } else if (key === '*') {
+        setDialInput(prev => prev + '*');
+        setAppState('dialing');
+      } else if (['0','1','2','3','4','5','6','7','8','9'].includes(key)) {
+        setDialInput(prev => prev + key);
+        setAppState('dialing');
+      }
+    } else if (appState === 'ussd_active') {
+      // USSD SESSION MODE
+      if (key === 'Call') {
+        await handleContinue();
+      } else if (['0','1','2','3','4','5','6','7','8','9'].includes(key)) {
+        if (isPinScreen()) {
+          // PIN input: allow up to 6 digits
+          if (dialInput.length < 6) {
+            setDialInput(prev => prev + key);
+          }
+        } else if (isPhoneNumberScreen()) {
+          // Phone number input: allow up to 11 digits
+          if (dialInput.length < 11) {
+            setDialInput(prev => prev + key);
+          }
+        } else {
+          // Menu selection: single digit
+          setDialInput(key);
+        }
+      }
+    }
+  };
+
+  const isPinScreen = (): boolean => {
+    return ussdResponse.includes('PIN:') ||
+           ussdResponse.includes('Enter PIN (4-6 digits)') ||
+           ussdResponse.includes('Create PIN (4-6 digits)') ||
+           ussdResponse.includes('Re-enter your PIN');
+  };
+
+  const isPhoneNumberScreen = (): boolean => {
+    return ussdResponse.includes('Enter Phone Number') ||
+           ussdResponse.includes('Number:');
+  };
+
+  const handleDial = async () => {
+    if (!dialInput) return;
+    
+    // Generate new phone number for registration flows
+    let currentProfile = phoneProfile;
+    if (dialInput === '*789#') {
+      currentProfile = PhoneManager.createPhoneProfile(deviceType);
+      setPhoneProfile(currentProfile);
+      console.log('📱 Generated new phone for registration:', currentProfile.displayNumber);
+    }
+    
+    if (!currentProfile) return;
+    
+    console.log('📞 Dialing:', dialInput, 'on', currentProfile.displayNumber);
+    setLoading(true);
+    setError(null);
+    
+    // Show smartphone overlay for smartphone device
+    if (deviceType === 'smartphone') {
+      setShowSmartphoneOverlay(true);
+    }
+
+    try {
+      let sessionId = '';
+      
+      if (dialInput === '*789#') {
+        // Registration flow
+        sessionId = `registration_${Date.now()}`;
+        console.log('📝 Starting Registration Flow');
+      } else {
+        // Check for purchase flow - support 3 patterns
+        let match;
+        
+        // Try Pattern 2: *789*RECIPIENT*AMOUNT*PIN#
+        match = dialInput.match(/^\*789\*(\d{11})\*(\d+)\*(\d{4,6})#$/);
+        if (match) {
+          const [, recipient, amount, pin] = match;
+          if (!PhoneManager.isRegistered(currentProfile.number)) {
+            throw new Error(`Phone ${currentProfile.displayNumber} not registered. Dial *789# first.`);
+          }
+          sessionId = `purchase_${recipient}_${amount}_${pin}_${Date.now()}`;
+          console.log('📤 Pattern 2: Send to', recipient, 'Amount:', amount);
+        }
+
+        // Try Pattern 1: *789*AMOUNT*PIN#
+        if (!sessionId) {
+          match = dialInput.match(/^\*789\*(\d+)\*(\d{4,6})#$/);
+          if (match) {
+            const [, amount, pin] = match;
+            console.log('🔍 DEBUG2 - Matched amount:', amount, 'pin:', pin);
+            if (!PhoneManager.isRegistered(currentProfile.number)) {
+              throw new Error(`Phone ${currentProfile.displayNumber} not registered. Dial *789# first.`);
+            }
+            sessionId = `purchase_${amount}_${pin}_${Date.now()}`;
+            console.log('🔍 DEBUG2 - Created sessionId:', sessionId);
+            console.log('💰 Pattern 1: Buy for self, Amount:', amount);
+          }
+        }
+
+        // Try Pattern 3: *789*AMOUNT# (fallback)
+        if (!sessionId) {
+          match = dialInput.match(/^\*789\*(\d+)#$/);
+          if (match) {
+            const [, amount] = match;
+            if (!PhoneManager.isRegistered(currentProfile.number)) {
+              throw new Error(`Phone ${currentProfile.displayNumber} not registered. Dial *789# first.`);
+            }
+            sessionId = `purchase_${amount}_${Date.now()}`;
+            console.log('📋 Pattern 3: Fallback flow, Amount:', amount);
+          }
+        }
+
+        if (!sessionId) {
+          throw new Error('Invalid USSD code. Use *789# to register or *789*AMOUNT*PIN# to purchase.');
+        }
+      }
+
+      const response = await USSDService.startSession(sessionId, phoneProfile.number);
+      
+      // Format message based on device type
+      const formattedMessage = MessageFormatter.formatMessage(response.message, deviceType);
+      
+      setSession({
+        sessionId,
+        phoneNumber: phoneProfile.number,
+        stage: 'started',
+        flowType: sessionId.includes('registration') ? 'registration' : 'purchase',
+        createdAt: Date.now()
+      });
+      
+      setUssdResponse(formattedMessage.content);
+      setAppState('ussd_active');
+      setDialInput('');
+    } catch (err: any) {
+      console.error('❌ Dial Error:', err);
+      setError(err.message);
+      setAppState('idle');
+      setDialInput('');
+      setShowSmartphoneOverlay(false);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleContinue = async () => {
+    if (!dialInput || !session || !phoneProfile) return;
+    
+    console.log('➡️ Continue with:', dialInput);
+    setLoading(true);
+    setError(null);
+
+    try {
+      // Check for wallet linking on basic phone
+      if (deviceType === 'basic' && dialInput === '2' &&
+          ussdResponse.includes('Link Existing')) {
+        throw new Error('Wallet linking requires a smartphone. Please use the Android device type or choose option 1 for new wallet.');
+      }
+
+      const response = await USSDService.continueSession(
+        session.sessionId,
+        phoneProfile.number,
+        dialInput
+      );
+
+      // Format message based on device type
+      const formattedMessage = MessageFormatter.formatMessage(response.message, deviceType);
+      
+      setUssdResponse(formattedMessage.content);
+      setDialInput('');
+
+      // Register phone number on successful wallet creation
+      if (response.message.includes('✅ Wallet Created') ||
+          response.message.includes('Wallet Created') ||
+          response.message.includes('✅ Wallet Linked')) {
+        PhoneManager.registerPhone(phoneProfile.number);
+        console.log('🎉 Phone registered:', phoneProfile.displayNumber);
+      }
+
+      if (response.end) {
+        // Show final message for 3 seconds then return to idle
+        setTimeout(() => {
+          resetToIdle();
+        }, 3000);
+      }
+    } catch (err: any) {
+      console.error('❌ Continue Error:', err);
+      setError(err.message);
+      setDialInput('');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const getScreenText = (): string => {
+    if (loading) {
+      return 'Please wait...\nConnecting to OUH!\n\n●●●';
+    }
+
+    if (error) {
+      return `Error:\n${error}\n\nPress End to clear`;
+    }
+
+    if (appState === 'idle') {
+      const time = new Date().toLocaleTimeString('en-GB', {
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+      return `${time}\n\nMTN Nigeria\nWelcome!\n\n\n\n`;
+    }
+
+    if (appState === 'dialing') {
+      return dialInput;
+    }
+
+    if (appState === 'ussd_active') {
+      let inputDisplay = '';
+      if (dialInput) {
+        if (isPinScreen()) {
+          const masked = '*'.repeat(dialInput.length);
+          const progress = `(${dialInput.length}/6)`;
+          inputDisplay = `\n> ${masked} ${progress}`;
+        } else if (isPhoneNumberScreen()) {
+          inputDisplay = `\n> ${dialInput}`;
+        } else {
+          inputDisplay = `\n> ${dialInput}`;
+        }
+      }
+      return `${ussdResponse}${inputDisplay}`;
+    }
+
+    return '';
+  };
+
+  const getStatusText = (): string => {
+    const time = new Date().toLocaleTimeString('en-GB', {
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+
+    switch (appState) {
+      case 'idle':
+        const deviceName = deviceType === 'basic' ? 'Nokia' : 'Android';
+        const charLimit = PhoneManager.getCharacterLimit(deviceType);
+        return `${deviceName} | ${charLimit}chars | ${time}`;
+      case 'dialing':
+        return `Dialing... | ${time}`;
+      case 'ussd_active':
+        const inputType = isPinScreen() ? 'PIN' :
+                         isPhoneNumberScreen() ? 'Phone' : 'Menu';
+        return `USSD Active | ${inputType} | ${session?.sessionId.slice(-6) || ''}`;
+      default:
+        return `Ready | ${time}`;
+    }
+  };
+
+  return (
+    <div className="app">
+      <div className="app-container">
+        <h1 className="app-title">OUH! Dual-Device USSD Simulator</h1>
+        <p className="app-subtitle">Experience crypto wallets on both basic phones and smartphones</p>
+        
+        <DeviceToggle
+          deviceType={deviceType}
+          onToggle={handleDeviceToggle}
+        />
+
+        {deviceType === 'basic' ? (
+          <PhoneFrame
+            screenText={getScreenText()}
+            statusText={getStatusText()}
+            loading={loading}
+            onKeyPress={handleKeyPress}
+          />
+        ) : (
+          <AndroidFrame
+            phoneNumber={phoneProfile?.displayNumber || ''}
+            isRegistered={phoneProfile ? PhoneManager.isRegistered(phoneProfile.number) : false}
+            onDialClick={handleAndroidDial}
+          />
+        )}
+
+        {showSmartphoneOverlay && (
+          <SmartphoneOverlay
+            screenText={getScreenText()}
+            statusText={getStatusText()}
+            loading={loading}
+            onKeyPress={handleKeyPress}
+            onClose={() => setShowSmartphoneOverlay(false)}
+          />
+        )}
+
+        <div className="demo-info">
+          <p>🔄 Device: {deviceType === 'basic' ? 'Nokia Feature Phone' : 'Android Smartphone'}</p>
+          <p>Current: {phoneProfile?.displayNumber} ({PhoneManager.isRegistered(phoneProfile?.number || '') ? 'Registered' : 'Unregistered'})</p>
+          <p>Char Limit: {PhoneManager.getCharacterLimit(deviceType)} characters</p>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default App;

@@ -1,128 +1,208 @@
 /**
- * Enhanced in-memory user registry for development
- * Stores both phone numbers and associated user data
- * In production, this would be replaced with a database
+ * Enhanced in-memory User Registry for development
+ * ------------------------------------------------
+ * - Normalizes phone numbers to local Nigerian format (e.g., 0803...)
+ * - Single source of truth for per-user metadata
+ * - Backward-compatible simple registration set (registeredUsers)
+ * - Convenient upsert() + safe updateUser() semantics
+ * - Useful stats + debug helpers
+ *
+ * In production, replace the Map/Set with a durable database layer while
+ * keeping this exact public interface to avoid touching callers.
  */
+
+'use strict';
+
+/** Normalize a phone to local format: "+234xxxxxxxxxx" -> "0xxxxxxxxxx" */
+const normalizePhone = (p) => String(p || '').replace(/^\+234/, '0');
+
+/** Mask a phone for logs */
+const maskPhone = (p) => {
+  const s = String(p || '');
+  return s.length >= 4 ? `${s.slice(0, 4)}****` : '****';
+};
+
 class UserRegistry {
   constructor() {
-    this.registeredUsers = new Set(); // For backward compatibility
-    this.userData = new Map(); // Store full user data
+    /**
+     * Back-compat: callers might only care that a phone is "registered".
+     * We still maintain this Set for quick membership queries.
+     */
+    this.registeredUsers = new Set();
+
+    /**
+     * Primary store for structured user data.
+     * Key: normalized phone (e.g., 0803xxxxxxx)
+     * Value: object { phone, walletAddress?, pinHash?, alias?, registeredAt, updatedAt, ... }
+     */
+    this.userData = new Map();
+
     console.log('📋 Enhanced User Registry initialized (in-memory)');
   }
 
+  // ---------------------------------------------------------------------------
+  // Core helpers
+  // ---------------------------------------------------------------------------
+
   /**
-   * Register a user (simple registration - backward compatible)
-   * @param {string} phoneNumber - User's phone number
+   * Ensure a phone is present in the simple membership Set.
+   */
+  #ensureMembership(key) {
+    if (!this.registeredUsers.has(key)) this.registeredUsers.add(key);
+  }
+
+  /**
+   * Return an existing record or a new base record (without saving).
+   */
+  #baseRecord(key) {
+    const existing = this.userData.get(key);
+    if (existing) return existing;
+    return { phone: key, registeredAt: Date.now(), updatedAt: Date.now() };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Public API (stable)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Simple registration (backward compatible).
+   * Adds the phone to membership and creates a base record if none exists.
    */
   register(phoneNumber) {
-    this.registeredUsers.add(phoneNumber);
-    console.log(`✅ User registered in registry: ${phoneNumber.substring(0, 4)}****`);
+    const key = normalizePhone(phoneNumber);
+    this.#ensureMembership(key);
+    if (!this.userData.has(key)) {
+      this.userData.set(key, this.#baseRecord(key));
+    }
+    console.log(`✅ User registered: ${maskPhone(key)}`);
   }
 
   /**
-   * Register a user with full data (for wallet linking)
-   * @param {string} phoneNumber - User's phone number
-   * @param {object} data - User data (phoneHash, pinHash, walletAddress, etc.)
+   * Rich registration with initial data payload (e.g., walletAddress, alias).
+   * Always normalizes phone and guarantees a stored record.
    */
-  registerUser(phoneNumber, data) {
-    this.registeredUsers.add(phoneNumber);
-    this.userData.set(phoneNumber, {
+  registerUser(phoneNumber, data = {}) {
+    const key = normalizePhone(phoneNumber);
+    this.#ensureMembership(key);
+
+    const next = {
+      ...this.#baseRecord(key),
       ...data,
+      phone: key,
       registeredAt: data.registeredAt || Date.now(),
-      updatedAt: Date.now()
+      updatedAt: Date.now(),
+    };
+
+    this.userData.set(key, next);
+    console.log(`✅ User registered with data: ${maskPhone(key)}`, {
+      hasWallet: !!next.walletAddress,
+      walletType: next.walletType || null,
     });
-    console.log(`✅ User registered with data: ${phoneNumber.substring(0, 4)}****`, {
-      walletType: data.walletType,
-      hasWallet: !!data.walletAddress,
-      cluster: data.cluster
-    });
+    return next;
   }
 
   /**
-   * Check if user is registered
-   * @param {string} phoneNumber - User's phone number
-   * @returns {boolean}
+   * Upsert convenience: creates a record if missing, or merges with existing.
+   * Returned object is the current stored value after merge.
    */
-  isRegistered(phoneNumber) {
-    return this.registeredUsers.has(phoneNumber);
+  upsert(phoneNumber, data = {}) {
+    const key = normalizePhone(phoneNumber);
+    this.#ensureMembership(key);
+
+    const existing = this.userData.get(key) || this.#baseRecord(key);
+    const next = {
+      ...existing,
+      ...data,
+      phone: key,
+      // keep earliest registeredAt; prefer provided value if explicitly set
+      registeredAt: data.registeredAt ?? existing.registeredAt ?? Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    this.userData.set(key, next);
+    console.log(`📝 User upserted: ${maskPhone(key)}`);
+    return next;
   }
 
   /**
-   * Get user data
-   * @param {string} phoneNumber - User's phone number
-   * @returns {object|null} User data or null if not found
+   * Safe partial update; throws if phone is not registered.
    */
-  getUserData(phoneNumber) {
-    return this.userData.get(phoneNumber) || null;
-  }
-
-  /**
-   * Update user data
-   * @param {string} phoneNumber - User's phone number
-   * @param {object} updates - Data to update
-   */
-  updateUser(phoneNumber, updates) {
-    if (!this.isRegistered(phoneNumber)) {
+  updateUser(phoneNumber, updates = {}) {
+    const key = normalizePhone(phoneNumber);
+    if (!this.isRegistered(key)) {
       throw new Error('User not registered');
     }
 
-    const existingData = this.userData.get(phoneNumber) || {};
-    this.userData.set(phoneNumber, {
-      ...existingData,
+    const existing = this.userData.get(key) || this.#baseRecord(key);
+    const next = {
+      ...existing,
       ...updates,
-      updatedAt: Date.now()
-    });
+      phone: key,
+      updatedAt: Date.now(),
+    };
 
-    console.log(`📝 User data updated: ${phoneNumber.substring(0, 4)}****`);
+    this.userData.set(key, next);
+    console.log(`📝 User data updated: ${maskPhone(key)}`);
+    return next;
   }
 
   /**
-   * Get all registered phone numbers
-   * @returns {Array<string>}
+   * Returns whether a phone is known to the registry (simple membership).
+   */
+  isRegistered(phoneNumber) {
+    const key = normalizePhone(phoneNumber);
+    return this.registeredUsers.has(key);
+  }
+
+  /**
+   * Fetch the full stored record (or null if missing).
+   */
+  getUserData(phoneNumber) {
+    const key = normalizePhone(phoneNumber);
+    return this.userData.get(key) || null;
+  }
+
+  /**
+   * Return a list of all registered (normalized) phone numbers.
    */
   getAll() {
     return Array.from(this.registeredUsers);
   }
 
   /**
-   * Get all users with full data
-   * @returns {Array<object>}
+   * Human-friendly listing for debugging / dashboards.
+   * Wallets are masked to avoid leaking full addresses in logs.
    */
   getAllUsersWithData() {
     return Array.from(this.userData.entries()).map(([phone, data]) => ({
-      phoneNumber: phone.substring(0, 4) + '****',
+      phoneNumber: maskPhone(phone),
       ...data,
-      walletAddress: data.walletAddress 
-        ? data.walletAddress.substring(0, 4) + '...' + data.walletAddress.substring(data.walletAddress.length - 4)
-        : null
+      walletAddress: data.walletAddress
+        ? `${data.walletAddress.slice(0, 4)}...${data.walletAddress.slice(-4)}`
+        : null,
     }));
   }
 
   /**
-   * Find user by wallet address
-   * @param {string} walletAddress - Solana wallet address
-   * @returns {string|null} Phone number or null
+   * Find the normalized phone number by an exact wallet address.
    */
   findByWallet(walletAddress) {
+    if (!walletAddress) return null;
     for (const [phone, data] of this.userData.entries()) {
-      if (data.walletAddress === walletAddress) {
-        return phone;
-      }
+      if (data.walletAddress === walletAddress) return phone;
     }
     return null;
   }
 
   /**
-   * Check if wallet is already linked
-   * @param {string} walletAddress - Solana wallet address
-   * @returns {boolean}
+   * True if any user is linked to this exact wallet address.
    */
   isWalletLinked(walletAddress) {
     return this.findByWallet(walletAddress) !== null;
   }
 
   /**
-   * Clear all data
+   * Clear all state (useful for tests/dev reset).
    */
   clear() {
     this.registeredUsers.clear();
@@ -131,20 +211,25 @@ class UserRegistry {
   }
 
   /**
-   * Get registry statistics
-   * @returns {object}
+   * Aggregate statistics for monitoring.
    */
   getStats() {
-    const usersWithWallets = Array.from(this.userData.values())
-      .filter(data => data.walletAddress).length;
-
+    const usersWithWallets = Array.from(this.userData.values()).filter(u => u.walletAddress).length;
     return {
       totalUsers: this.registeredUsers.size,
       usersWithData: this.userData.size,
-      usersWithWallets: usersWithWallets,
+      usersWithWallets,
       linkedWallets: usersWithWallets,
-      simpleRegistrations: this.registeredUsers.size - this.userData.size
+      simpleRegistrations: Math.max(this.registeredUsers.size - this.userData.size, 0),
+      updatedAt: Date.now(),
     };
+  }
+
+  /**
+   * Debug-only dump of the raw Map content (unmasked). Do not expose in prod APIs.
+   */
+  _debugDump() {
+    return Object.fromEntries(this.userData.entries());
   }
 }
 
