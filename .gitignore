@@ -50,3 +50,9 @@ planning/private/
 *_PRIVATE.md
 internal/
 confidential/
+
+# Backup files
+*.save
+*.save.*
+*.backup
+old_*.js
